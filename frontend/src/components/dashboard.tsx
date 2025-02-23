@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import { PatientList } from "@/components/patient-list"
 import { Metrics } from "@/components/metrics"
 import { RecentActivity } from "@/components/recent-activity"

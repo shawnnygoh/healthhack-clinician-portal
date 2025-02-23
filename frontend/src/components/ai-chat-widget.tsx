@@ -1,9 +1,9 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Heart, Maximize2, Minimize2, X, Send, Stethoscope } from "lucide-react"
+import { Maximize2, Minimize2, X, Send, Stethoscope } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
@@ -128,8 +128,8 @@ Would you like me to provide more specific details about any of these points?`
           <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-muted-foreground p-4">
             <IrisLogo />
             <div>
-              <p className="text-lg font-medium mb-2">Hello, I'm Iris!</p>
-              <p className="text-sm">I'm here to help with patient assessments, treatment plans, and clinical recommendations.</p>
+              <p className="text-lg font-medium mb-2">Hello, I&apos;m Iris!</p>
+              <p className="text-sm">I&apos;m here to help with patient assessments, treatment plans, and clinical recommendations.</p>
             </div>
             <div className="grid grid-cols-1 gap-2 w-full max-w-sm">
               <Button variant="outline" onClick={() => setQuery("Can you analyze the latest patient assessment?")}>

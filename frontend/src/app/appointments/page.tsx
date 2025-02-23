@@ -48,7 +48,7 @@ export default function AppointmentsPage() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <Card>
           <CardHeader>
-            <CardTitle className="text-xl">Today's Appointments</CardTitle>
+            <CardTitle className="text-xl">Today&apos;s Appointments</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="text-3xl font-bold">5</p>
