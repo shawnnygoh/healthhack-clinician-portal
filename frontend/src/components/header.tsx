@@ -10,7 +10,7 @@ export function Header() {
           <div className="flex items-center">
             <SidebarTrigger />
             <h2 className="ml-4 text-2xl font-bold leading-7 text-gray-900 sm:text-3xl sm:truncate">
-              RehabSync
+              Dexterity Dash
             </h2>
           </div>
           <div className="flex items-center">
