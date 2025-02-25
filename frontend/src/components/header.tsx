@@ -64,10 +64,10 @@ export function Header() {
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
-                    <a href="/api/auth/logout">
+                    <Link href="/api/auth/logout">
                       <LogOut className="mr-2 h-4 w-4" />
                       <span>Log out</span>
-                    </a>
+                    </Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
