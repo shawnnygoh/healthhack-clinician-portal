@@ -39,7 +39,8 @@ export function Header() {
                   <Button variant="ghost" size="icon" className="ml-3 relative">
                     {user.picture ? (
                       <div className="w-8 h-8 rounded-full overflow-hidden relative">
-                        {/* Use an img tag instead of Next/Image for auth provider images */}
+                        {/* We use img instead of Next/Image for auth provider images */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img 
                           src={user.picture} 
                           alt={user.name || "User"}
@@ -64,7 +65,14 @@ export function Header() {
                     </Link>
                   </DropdownMenuItem>
                   <DropdownMenuItem asChild>
-                    <Link href="/api/auth/logout">
+                    <Link 
+                      href="/api/auth/logout" 
+                      prefetch={false}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        window.location.href = "/api/auth/logout";
+                      }}
+                    >
                       <LogOut className="mr-2 h-4 w-4" />
                       <span>Log out</span>
                     </Link>
