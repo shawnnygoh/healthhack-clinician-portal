@@ -6,6 +6,7 @@ import { AppSidebar } from "@/components/app-sidebar"
 import { Header } from "@/components/header"
 import { AIChatWidget } from "@/components/ai-chat-widget"
 import { Providers } from "./providers"
+import { Toaster } from "@/components/ui/sonner"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -36,6 +37,7 @@ export default function RootLayout({
             <AIChatWidget />
           </SidebarProvider>
         </Providers>
+        <Toaster richColors />
       </body>
     </html>
   )

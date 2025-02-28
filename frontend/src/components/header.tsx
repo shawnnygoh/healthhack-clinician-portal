@@ -13,9 +13,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useUserContext } from "@/context/UserContext";
 
 export function Header() {
-  const { user, isLoading } = useUser();
+  const { isLoading: auth0Loading } = useUser();
+  const { userData: user, isLoading: contextLoading } = useUserContext();
+  
+  const isLoading = auth0Loading || contextLoading;
 
   return (
     <header className="bg-white shadow-sm">
@@ -70,6 +74,8 @@ export function Header() {
                       prefetch={false}
                       onClick={(e) => {
                         e.preventDefault();
+                        // Clear local user overrides before logging out
+                        localStorage.removeItem('healthhack_user_overrides');
                         window.location.href = "/api/auth/logout";
                       }}
                     >
