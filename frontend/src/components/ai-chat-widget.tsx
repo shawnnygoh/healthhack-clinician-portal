@@ -1,24 +1,42 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
-import { Maximize2, Minimize2, X, Send, Stethoscope } from "lucide-react"
+import { Maximize2, Minimize2, X, Send, Stethoscope, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import ReactMarkdown from 'react-markdown'
+import { useUserContext } from '@/context/UserContext'
+import remarkGfm from 'remark-gfm';
+
+interface PatientInfo {
+  id: string
+  name: string
+}
+
+interface RawData {
+  patient_info?: PatientInfo
+  [key: string]: unknown
+}
 
 interface Message {
   type: "query" | "response"
   text: string
   isTyping?: boolean
+  raw_data?: RawData
 }
 
 export function AIChatWidget() {
+  const { userData: user } = useUserContext();
   const [isOpen, setIsOpen] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
   const [query, setQuery] = useState("")
-  const [responses, setResponses] = useState<Message[]>([])
+  const [messages, setMessages] = useState<Message[]>([])
   const [isTyping, setIsTyping] = useState(false)
+  const [currentPatient, setCurrentPatient] = useState<number | null>(null)
+  const [patientName, setPatientName] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
 
@@ -30,38 +48,105 @@ export function AIChatWidget() {
 
   useEffect(() => {
     scrollToBottom()
-  }, [responses, isTyping])
+  }, [messages, isTyping])
+
+  const formatResponseText = (text: string) => {
+    const cleanedText = text.replace(/\n{3,}/g, '\n\n');
+    
+    const withMarkdownBullets = cleanedText.replace(/^•\s+(.+)$/gm, '* $1');
+    
+    return withMarkdownBullets;
+  };
+
+  const getFirstName = (fullName: string | undefined) => {
+    if (!fullName) return 'Clinician';
+    
+    // Define common titles to filter out
+    const titles = ['dr', 'dr.', 'prof', 'prof.', 'mr', 'mr.', 'mrs', 'mrs.', 'ms', 'ms.', 'miss'];
+    
+    // Split the name and convert to lowercase for comparison
+    const nameParts = fullName.split(' ');
+    
+    // If the first part is a title, return the second part
+    if (nameParts.length > 1 && titles.includes(nameParts[0].toLowerCase())) {
+      return nameParts[1];
+    }
+    
+    // Otherwise return the first part as before
+    return nameParts[0];
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim() || isTyping) return
 
-    // Add user query to responses
-    setResponses(prev => [...prev, { type: "query", text: query }])
+    // Add user query to messages
+    setMessages(prev => [...prev, { type: "query", text: query }])
     setIsTyping(true)
 
-    // Simulate AI response
-    const aiResponse = `I understand you're asking about "${query}". Here's what I can tell you:
+    try {
+      // Send query to backend with CORS headers
+      const response = await fetch('http://localhost:5011/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        mode: 'cors', // Explicitly set CORS mode
+        body: JSON.stringify({ 
+          query, 
+          patient_id: currentPatient 
+        }),
+      });
 
-1. Based on my analysis of the patient's records:
-   • Recent therapy sessions show positive progress
-   • Exercise compliance is trending upward
-   • Pain levels are gradually decreasing
+      if (!response.ok) {
+        throw new Error(`Server responded with status: ${response.status}`);
+      }
 
-2. Recommended next steps:
-   • Continue with the current exercise regimen
-   • Schedule a follow-up assessment
-   • Monitor range of motion improvements
-
-Would you like me to provide more specific details about any of these points?`
-
-    // Add AI response after a delay to simulate typing
-    setTimeout(() => {
-      setResponses(prev => [...prev, { type: "response", text: aiResponse }])
-      setIsTyping(false)
-    }, 1500)
+      const data = await response.json();
+      
+      // Format the response text for better display
+      const formattedResponse = formatResponseText(data.response);
+      
+      setTimeout(() => {
+        setMessages(prev => [...prev, { 
+          type: "response", 
+          text: formattedResponse,
+          raw_data: data.supporting_evidence 
+        }]);
+        setIsTyping(false);
+      }, 600);
+    } catch (error) {
+      console.error("Error querying AI assistant:", error);
+      
+      setMessages(prev => [...prev, { 
+        type: "response", 
+        text: `I'm sorry, I encountered an error connecting to the server. Please check if the backend is running on port 5011 and try again. Error: ${error instanceof Error ? error.message : String(error)}`
+      }]);
+      setIsTyping(false);
+    }
 
     setQuery("")
+  };
+
+  // Function to set the current patient context
+  const setPatientContext = (patientId: number, name: string) => {
+    setCurrentPatient(patientId);
+    setPatientName(name);
+    setMessages(prev => [...prev, { 
+      type: "response", 
+      text: `I'm now focused on patient ${name}. How can I help with their rehabilitation plan?`
+    }]);
+  }
+
+  // Function to clear the current patient context
+  const clearPatientContext = () => {
+    setCurrentPatient(null);
+    setPatientName(null);
+    setMessages(prev => [...prev, { 
+      type: "response", 
+      text: "I'm no longer focused on a specific patient. You can ask general questions about rehabilitation exercises and treatment approaches."
+    }]);
   }
 
   const IrisLogo = () => (
@@ -97,6 +182,19 @@ Would you like me to provide more specific details about any of these points?`
           </div>
         </CardTitle>
         <div className="flex gap-1">
+          {currentPatient && (
+            <Badge variant="outline" className="mr-2 px-2 py-1 bg-blue-50">
+              Patient: {patientName}
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-4 w-4 ml-1 p-0"
+                onClick={clearPatientContext}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -124,47 +222,73 @@ Would you like me to provide more specific details about any of these points?`
         ref={chatContainerRef}
         className="flex-1 overflow-y-auto p-4 space-y-4"
       >
-        {responses.length === 0 ? (
+        {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-4 text-center text-muted-foreground p-4">
             <IrisLogo />
             <div>
-              <p className="text-lg font-medium mb-2">Hello, I&apos;m Iris!</p>
-              <p className="text-sm">I&apos;m here to help with patient assessments, treatment plans, and clinical recommendations.</p>
+              <p className="text-lg font-medium mb-2">Hello, {getFirstName(user?.name)}!</p>
+              <p className="text-sm">I&apos;m Iris, your AI assistant. I can help analyze patient data, suggest exercises, and provide evidence-based recommendations for rehabilitation.</p>
             </div>
             <div className="grid grid-cols-1 gap-2 w-full max-w-sm">
-              <Button variant="outline" onClick={() => setQuery("Can you analyze the latest patient assessment?")}>
-                Patient Assessment
+              <Button variant="outline" onClick={() => setQuery("What exercises are recommended for Parkinson's patients with hand tremors?")}>
+                Exercise Recommendations
               </Button>
-              <Button variant="outline" onClick={() => setQuery("What are the recommended exercises for this patient?")}>
-                Treatment Recommendations
+              <Button variant="outline" onClick={() => setQuery("What are the latest guidelines for physical therapy in rheumatoid arthritis?")}>
+                Clinical Guidelines
               </Button>
-              <Button variant="outline" onClick={() => setQuery("Show me the progress metrics")}>
-                Progress Analysis
+              <Button variant="outline" onClick={() => setQuery("How can I track progress for patients with movement disorders?")}>
+                Progress Assessment
               </Button>
             </div>
           </div>
         ) : (
           <>
-            {responses.map((response, index) => (
+            {messages.map((message, index) => (
               <div
                 key={index}
                 className={cn(
                   "flex gap-2",
-                  response.type === "query" ? "justify-end" : "justify-start"
+                  message.type === "query" ? "justify-end" : "justify-start"
                 )}
               >
-                {response.type === "response" && <IrisLogo />}
+                {message.type === "response" && <IrisLogo />}
+                {message.type === "query" && <div className="h-10 w-10 rounded-full bg-blue-600 flex items-center justify-center"><User className="h-5 w-5 text-white" /></div>}
                 <div
                   className={cn(
                     "rounded-lg p-3 max-w-[80%]",
-                    response.type === "query"
+                    message.type === "query"
                       ? "bg-blue-600 text-white"
                       : "bg-gray-100"
                   )}
                 >
-                  <pre className="whitespace-pre-wrap font-sans text-sm">
-                    {response.text}
-                  </pre>
+                  {message.type === "response" ? (
+                    <div className="prose prose-sm max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="whitespace-pre-wrap font-sans text-sm">
+                      {message.text}
+                    </p>
+                  )}
+                  
+                  {/* If the message contains patient data suggestions */}
+                  {message.raw_data?.patient_info && (
+                    <div className="mt-2 pt-2 border-t border-gray-200">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="text-xs"
+                        onClick={() => setPatientContext(
+                          parseInt(message.raw_data?.patient_info?.id ?? "0"), 
+                          message.raw_data?.patient_info?.name ?? "Unknown Patient"
+                        )}
+                      >
+                        Focus on this patient
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
@@ -189,7 +313,10 @@ Would you like me to provide more specific details about any of these points?`
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Ask Iris a question..."
+          placeholder={currentPatient 
+            ? `Ask about ${patientName}'s rehabilitation...` 
+            : "Ask about exercises, treatments, guidelines..."
+          }
           className="flex-1"
         />
         <Button type="submit" size="icon" disabled={isTyping} className="bg-blue-600 hover:bg-blue-700">
