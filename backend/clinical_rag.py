@@ -645,11 +645,12 @@ class ClinicalRAG:
             
             # Insert into database
             cursor.execute(
-                f"INSERT INTO {self.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
+                f"INSERT INTO {self.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
                 (
                     new_id, 
                     patient_data["patient_id"], 
                     patient_data["name"], 
+                    patient_data["age"],
                     patient_data["condition"], 
                     patient_data["medical_history"], 
                     patient_data["current_treatment"], 
@@ -666,6 +667,20 @@ class ClinicalRAG:
             cursor.close()
             conn.close()
     
+    def delete_patient(self, patient_id):
+        """Delete a patient from the database"""
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(f"DELETE FROM {self.PATIENT_TABLE} WHERE id = ?", (patient_id,))
+            conn.commit()
+            return {"status": "success"}
+        
+        finally:
+            cursor.close()
+            conn.close()
+
     def update_progress_notes(self, patient_id, new_notes, new_assessment):
         """Update a patient's progress notes and assessment, with updated embeddings"""
         conn = self.get_db_connection()

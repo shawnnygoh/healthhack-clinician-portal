@@ -4,6 +4,8 @@ import { PatientList } from "@/components/patient-list"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell, Pie, PieChart } from "recharts"
+import { AddPatientSheet } from "@/components/add-patient-form"
+import { PatientCountCard } from "@/components/patient-count-card"
 
 const adherenceData = [
   { name: "Week 1", adherence: 75 },
@@ -15,22 +17,15 @@ const adherenceData = [
 ]
 
 export default function PatientsDashboard() {
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-semibold text-gray-800">Patients</h1>
-        <Button>Add New Patient</Button>
+        <AddPatientSheet />
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-xl">Total Patients</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold">127</p>
-            <p className="text-sm text-gray-500">↑ 12% from last month</p>
-          </CardContent>
-        </Card>
+        <PatientCountCard/>
         <Card>
           <CardHeader>
             <CardTitle className="text-xl">Active Treatment Plans</CardTitle>

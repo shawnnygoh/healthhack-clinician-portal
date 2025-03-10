@@ -86,7 +86,7 @@ export function AIChatWidget() {
 
     try {
       // Send query to backend with CORS headers
-      const response = await fetch('http://localhost:5011/api/chat', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

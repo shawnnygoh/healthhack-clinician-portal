@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import json
 import os
 from dotenv import load_dotenv
@@ -14,7 +14,11 @@ else:
     load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app, 
+     resources={r"/api/*": {"origins": "http://localhost:3000"}}, 
+     supports_credentials=True,
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization", "X-Requested-With"])
 
 # Check for Groq API key in environment
 if not os.environ.get("GROQ_API_KEY"):
@@ -54,6 +58,7 @@ def initialize_database():
                 id INTEGER PRIMARY KEY,
                 patient_id VARCHAR(50),
                 name VARCHAR(100),
+                age INTEGER,
                 condition VARCHAR(100),
                 medical_history VARCHAR(1000),
                 current_treatment VARCHAR(1000),
@@ -107,6 +112,7 @@ def seed_sample_data():
                 "id": 1,
                 "patient_id": "P001",
                 "name": "John Doe",
+                "age": 65,
                 "condition": "Parkinson's Disease",
                 "medical_history": "Diagnosed with Parkinson's 3 years ago. History of hypertension.",
                 "current_treatment": "Levodopa 100mg TID, Physical therapy twice weekly",
@@ -117,6 +123,7 @@ def seed_sample_data():
                 "id": 2,
                 "patient_id": "P002",
                 "name": "Jane Smith",
+                "age": 58,
                 "condition": "Rheumatoid Arthritis",
                 "medical_history": "RA diagnosed 5 years ago. Joint deformities in hands. Previous knee replacement.",
                 "current_treatment": "Methotrexate weekly, Low-impact exercises daily",
@@ -127,6 +134,7 @@ def seed_sample_data():
                 "id": 3,
                 "patient_id": "P003",
                 "name": "Bob Johnson",
+                "age": 70,
                 "condition": "Parkinson's Disease",
                 "medical_history": "Diagnosed with Parkinson's 7 years ago. Advanced stage with significant tremor and rigidity.",
                 "current_treatment": "Carbidopa-levodopa 25-100mg QID, Deep brain stimulation (DBS) 6 months ago",
@@ -137,6 +145,7 @@ def seed_sample_data():
                 "id": 4,
                 "patient_id": "P004",
                 "name": "Alice Brown",
+                "age": 50,
                 "condition": "Rheumatoid Arthritis",
                 "medical_history": "RA diagnosed 2 years ago. Early intervention with biologics. No significant joint deformities.",
                 "current_treatment": "Adalimumab biweekly, Daily range-of-motion exercises, Pool therapy twice weekly",
@@ -147,6 +156,7 @@ def seed_sample_data():
                 "id": 5,
                 "patient_id": "P005",
                 "name": "Charlie Davis",
+                "age": 45,
                 "condition": "Parkinson's Disease",
                 "medical_history": "Early-onset Parkinson's, diagnosed 1 year ago at age 42. Family history positive.",
                 "current_treatment": "Ropinirole 2mg TID, LSVT BIG therapy program, High-intensity interval training 3x weekly",
@@ -337,11 +347,12 @@ def seed_sample_data():
             embedding = clinical_rag.model.encode(combined_text, normalize_embeddings=True).tolist()
             
             cursor.execute(
-                f"INSERT INTO {clinical_rag.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
+                f"INSERT INTO {clinical_rag.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
                 (
                     patient["id"], 
                     patient["patient_id"], 
                     patient["name"], 
+                    patient["age"],
                     patient["condition"], 
                     patient["medical_history"], 
                     patient["current_treatment"], 
@@ -407,7 +418,7 @@ def get_patients():
         cursor = conn.cursor()
         
         cursor.execute(
-            f"SELECT id, patient_id, name, condition FROM {clinical_rag.PATIENT_TABLE}"
+            f"SELECT * FROM {clinical_rag.PATIENT_TABLE}"
         )
         
         patients = []
@@ -416,13 +427,41 @@ def get_patients():
                 "id": row[0],
                 "patient_id": row[1],
                 "name": row[2],
-                "condition": row[3]
+                "age": row[3],
+                "condition": row[4],
+                "medical_history": row[5],
+                "current_treatment": row[6],
+                "progress_notes": row[7],
+                "assessment": row[8]
             })
         
         cursor.close()
         conn.close()
         
-        return jsonify({"patients": patients})
+        response = jsonify({"patients": patients})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patients/count', methods=['GET'])
+def get_patient_count():
+    """Get the total count of patients in the database"""
+    try:
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            f"SELECT COUNT(*) FROM {clinical_rag.PATIENT_TABLE}"
+        )
+        
+        count = cursor.fetchone()[0]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"patient_count": count})
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -490,9 +529,9 @@ def add_patient():
     """Add a new patient to the database"""
     try:
         data = request.json
-        
+
         # Validate required fields
-        required_fields = ["patient_id", "name", "condition", "medical_history", 
+        required_fields = ["patient_id", "name", "age", "condition", "medical_history", 
                           "current_treatment", "progress_notes", "assessment"]
         
         for field in required_fields:
@@ -503,6 +542,21 @@ def add_patient():
         result = clinical_rag.add_patient(data)
         
         return jsonify(result), 201
+    
+    except Exception as e:
+        print(f"Error in add_patient route: {str(e)}")
+        print("Request data:")
+        print(request.json)
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patient/<int:patient_id>', methods=['DELETE'])
+def delete_patient(patient_id):
+    """Delete a patient from the database"""
+    try:
+        # Delete patient using RAG service
+        result = clinical_rag.delete_patient(patient_id)
+        
+        return jsonify(result)
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -674,6 +728,7 @@ def debug_patients():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/chat', methods=['POST'])
+@cross_origin(origins="http://localhost:3000", supports_credentials=True)
 def chat():
     """Process a clinician's query using the RAG pipeline with robust error handling"""
     try:
