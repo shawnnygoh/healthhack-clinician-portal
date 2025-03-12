@@ -69,6 +69,7 @@ def generate_llm_response(system_prompt, user_prompt):
             # Extract the response content
             content = response.choices[0].message.content
             print("✅ Successfully generated LLM response with model")
+            print(f"Response content (first 100 chars): {content[:100]}...")
             return content
         except Exception as second_error:
             print(f"❌ Error with alternate model: {second_error}")

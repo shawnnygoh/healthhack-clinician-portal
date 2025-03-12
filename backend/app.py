@@ -1,9 +1,10 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS, cross_origin
-import json
 import os
 from dotenv import load_dotenv
 from clinical_rag import ClinicalRAG
+import signal
+import sys
 
 # Load environment variables from .env.local file if it exists
 env_file_path = '.env.local'
@@ -29,9 +30,15 @@ if not os.environ.get("GROQ_API_KEY"):
 # Initialize the Clinical RAG pipeline
 clinical_rag = ClinicalRAG()
 
+def signal_handler(sig, frame):
+    """Handle SIGINT (Ctrl+C) and SIGTERM signals gracefully"""
+    print("\nShutting down server...")
+    clinical_rag.cleanup()
+    sys.exit(0)
+
 @app.route('/api/initialize', methods=['POST'])
 def initialize_database():
-    """Initialize database tables for the clinical application"""
+    """Initialize database tables for the clinical application with enhanced schema"""
     try:
         conn = clinical_rag.get_db_connection()
         cursor = conn.cursor()
@@ -48,27 +55,35 @@ def initialize_database():
             cursor.execute(f"DROP TABLE {clinical_rag.PATIENT_TABLE}")
             cursor.execute(f"DROP TABLE {clinical_rag.GUIDELINES_TABLE}")
             cursor.execute(f"DROP TABLE {clinical_rag.EXERCISES_TABLE}")
+            cursor.execute(f"DROP TABLE {clinical_rag.SCHEMA_NAME}.PatientExercises")
         except Exception:
             # Tables might not exist yet
             pass
         
-        # Create patient data table with vector embeddings
+        # Create patient data table with improved vector embeddings
         cursor.execute(f"""
             CREATE TABLE {clinical_rag.PATIENT_TABLE} (
                 id INTEGER PRIMARY KEY,
                 patient_id VARCHAR(50),
                 name VARCHAR(100),
                 age INTEGER,
+                gender VARCHAR(20),
                 condition VARCHAR(100),
                 medical_history VARCHAR(1000),
                 current_treatment VARCHAR(1000),
+                treatment_outcomes VARCHAR(1000),
                 progress_notes VARCHAR(2000),
                 assessment VARCHAR(2000),
-                embedded_notes VECTOR(DOUBLE, 384)
+                adherence_rate INTEGER,
+                embedded_notes VECTOR(DOUBLE, 384),
+                embedded_history VECTOR(DOUBLE, 384),
+                embedded_treatment VECTOR(DOUBLE, 384),
+                embedded_demographics VECTOR(DOUBLE, 384),
+                embedded_outcomes VECTOR(DOUBLE, 384)
             )
         """)
         
-        # Create clinical guidelines table with vector embeddings
+        # Keep the same structure for other tables
         cursor.execute(f"""
             CREATE TABLE {clinical_rag.GUIDELINES_TABLE} (
                 id INTEGER PRIMARY KEY,
@@ -79,7 +94,6 @@ def initialize_database():
             )
         """)
         
-        # Create exercise recommendations table with vector embeddings
         cursor.execute(f"""
             CREATE TABLE {clinical_rag.EXERCISES_TABLE} (
                 id INTEGER PRIMARY KEY,
@@ -92,6 +106,17 @@ def initialize_database():
                 embedded_text VECTOR(DOUBLE, 384)
             )
         """)
+
+        cursor.execute(f"""
+            CREATE TABLE {clinical_rag.SCHEMA_NAME}.PatientExercises (
+                id INTEGER PRIMARY KEY,
+                patient_id INTEGER,
+                exercise_id INTEGER,
+                assigned_date VARCHAR(50),
+                status VARCHAR(50),
+                notes VARCHAR(1000)
+            )
+        """)
         
         conn.commit()
         cursor.close()
@@ -101,67 +126,82 @@ def initialize_database():
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
+    
 @app.route('/api/seed_data', methods=['POST'])
 def seed_sample_data():
     """Seed the database with sample clinical data"""
     try:
-        # Sample patient data
+        # Sample patient data with proper field order
         patients = [
             {
                 "id": 1,
                 "patient_id": "P001",
                 "name": "John Doe",
                 "age": 65,
+                "gender": "Male",
                 "condition": "Parkinson's Disease",
                 "medical_history": "Diagnosed with Parkinson's 3 years ago. History of hypertension.",
                 "current_treatment": "Levodopa 100mg TID, Physical therapy twice weekly",
+                "treatment_outcomes": "Hand exercises have been very effective for tremor reduction. Gait training shows slower progress.",
                 "progress_notes": "Patient shows improvement in fine motor control after 4 weeks of hand exercises. Tremor reduced by approximately 30%. Still having difficulty with balance during walking exercises.",
-                "assessment": "Moderate improvement in motor symptoms. Gait still unstable. Recommend continuing with current exercise regimen and adding additional balance exercises."
+                "assessment": "Moderate improvement in motor symptoms. Gait still unstable. Recommend continuing with current exercise regimen and adding additional balance exercises.",
+                "adherence_rate": 78
             },
             {
                 "id": 2,
                 "patient_id": "P002",
                 "name": "Jane Smith",
                 "age": 58,
+                "gender": "Female",
                 "condition": "Rheumatoid Arthritis",
                 "medical_history": "RA diagnosed 5 years ago. Joint deformities in hands. Previous knee replacement.",
                 "current_treatment": "Methotrexate weekly, Low-impact exercises daily",
+                "treatment_outcomes": "Water therapy has been particularly successful for pain management. Hand exercises show consistent improvement in dexterity.",
                 "progress_notes": "Patient reports reduced pain following consistent exercise program. Range of motion in wrists improved by 15 degrees. Still experiencing morning stiffness lasting approximately 45 minutes.",
-                "assessment": "Good adherence to exercise program with notable improvements. Consider adding gentle resistance training to build muscle around affected joints."
+                "assessment": "Good adherence to exercise program with notable improvements. Consider adding gentle resistance training to build muscle around affected joints.",
+                "adherence_rate": 92
             },
             {
                 "id": 3,
                 "patient_id": "P003",
                 "name": "Bob Johnson",
                 "age": 70,
+                "gender": "Male",
                 "condition": "Parkinson's Disease",
                 "medical_history": "Diagnosed with Parkinson's 7 years ago. Advanced stage with significant tremor and rigidity.",
                 "current_treatment": "Carbidopa-levodopa 25-100mg QID, Deep brain stimulation (DBS) 6 months ago",
+                "treatment_outcomes": "DBS has been transformative. Balance exercises showing less consistent results than expected.",
                 "progress_notes": "Since DBS placement, patient shows 60% reduction in tremor. Exercise tolerance has improved significantly. Now able to complete full 30-minute therapy sessions without excessive fatigue.",
-                "assessment": "Excellent response to DBS with significant improvement in motor symptoms. Continue with current exercise program focusing on balance and coordination."
+                "assessment": "Excellent response to DBS with significant improvement in motor symptoms. Continue with current exercise program focusing on balance and coordination.",
+                "adherence_rate": 85
             },
             {
                 "id": 4,
                 "patient_id": "P004",
                 "name": "Alice Brown",
                 "age": 50,
+                "gender": "Female",
                 "condition": "Rheumatoid Arthritis",
                 "medical_history": "RA diagnosed 2 years ago. Early intervention with biologics. No significant joint deformities.",
                 "current_treatment": "Adalimumab biweekly, Daily range-of-motion exercises, Pool therapy twice weekly",
+                "treatment_outcomes": "Combination of biologics and consistent exercise showing excellent results. Pool therapy particularly effective for this patient.",
                 "progress_notes": "Patient maintains excellent compliance with exercise regimen. Reports minimal morning stiffness (15 minutes or less). Pain levels consistently 2/10 or lower.",
-                "assessment": "Disease well-controlled with current regimen. Recommend maintaining current exercise program with gradual increase in resistance training as tolerated."
+                "assessment": "Disease well-controlled with current regimen. Recommend maintaining current exercise program with gradual increase in resistance training as tolerated.",
+                "adherence_rate": 96
             },
             {
                 "id": 5,
                 "patient_id": "P005",
                 "name": "Charlie Davis",
                 "age": 45,
+                "gender": "Male",
                 "condition": "Parkinson's Disease",
                 "medical_history": "Early-onset Parkinson's, diagnosed 1 year ago at age 42. Family history positive.",
                 "current_treatment": "Ropinirole 2mg TID, LSVT BIG therapy program, High-intensity interval training 3x weekly",
+                "treatment_outcomes": "LSVT BIG approach proving very effective. HIIT exercises have significantly improved cardiovascular fitness and overall energy levels.",
                 "progress_notes": "Excellent response to LSVT BIG program with significant improvement in stride length and arm swing. Voice volume improved with concurrent LSVT LOUD therapy. Maintaining full-time employment.",
-                "assessment": "Excellent progress with aggressive early intervention. Continue current exercise regimen with emphasis on maintaining intensity. Consider adding cognitive training exercises."
+                "assessment": "Excellent progress with aggressive early intervention. Continue current exercise regimen with emphasis on maintaining intensity. Consider adding cognitive training exercises.",
+                "adherence_rate": 88
             }
         ]
         
@@ -341,28 +381,55 @@ def seed_sample_data():
         conn = clinical_rag.get_db_connection()
         cursor = conn.cursor()
         
-        # Insert patients
+        # Insert patients with multiple embeddings
         for patient in patients:
-            combined_text = f"{patient['medical_history']} {patient['current_treatment']} {patient['progress_notes']} {patient['assessment']}"
-            embedding = clinical_rag.model.encode(combined_text, normalize_embeddings=True).tolist()
+            # Create separate embeddings for different aspects
+            history_embedding = clinical_rag.model.encode(patient['medical_history'], normalize_embeddings=True).tolist()
+            treatment_embedding = clinical_rag.model.encode(patient['current_treatment'], normalize_embeddings=True).tolist()
             
+            # Create demographics embedding
+            demographics_text = f"Age {patient['age']} {patient.get('gender', 'Unknown')} {patient['condition']}"
+            demographics_embedding = clinical_rag.model.encode(demographics_text, normalize_embeddings=True).tolist()
+            
+            # Create outcomes embedding
+            outcomes_text = f"{patient.get('treatment_outcomes', '')} {patient['assessment']}"
+            outcomes_embedding = clinical_rag.model.encode(outcomes_text, normalize_embeddings=True).tolist()
+            
+            # Create combined embedding for backward compatibility
+            combined_text = f"{patient['medical_history']} {patient['current_treatment']} {patient['progress_notes']} {patient['assessment']}"
+            combined_embedding = clinical_rag.model.encode(combined_text, normalize_embeddings=True).tolist()
+            
+            # Make sure the field order exactly matches the table definition
             cursor.execute(
-                f"INSERT INTO {clinical_rag.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
+                f"""
+                INSERT INTO {clinical_rag.PATIENT_TABLE} 
+                (id, patient_id, name, age, gender, condition, medical_history, current_treatment, 
+                treatment_outcomes, progress_notes, assessment, adherence_rate, 
+                embedded_notes, embedded_history, embedded_treatment, embedded_demographics, embedded_outcomes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?))
+                """,
                 (
                     patient["id"], 
                     patient["patient_id"], 
                     patient["name"], 
                     patient["age"],
+                    patient["gender"],
                     patient["condition"], 
                     patient["medical_history"], 
-                    patient["current_treatment"], 
+                    patient["current_treatment"],
+                    patient.get("treatment_outcomes", ""),
                     patient["progress_notes"], 
                     patient["assessment"],
-                    str(embedding)
+                    patient["adherence_rate"],
+                    str(combined_embedding),
+                    str(history_embedding),
+                    str(treatment_embedding),
+                    str(demographics_embedding),
+                    str(outcomes_embedding)
                 )
             )
         
-        # Insert guidelines
+        # Insert guidelines and exercises (same as before)
         for guideline in guidelines:
             embedding = clinical_rag.model.encode(guideline["guideline_text"], normalize_embeddings=True).tolist()
             
@@ -377,7 +444,6 @@ def seed_sample_data():
                 )
             )
         
-        # Insert exercises
         for exercise in exercises:
             combined_text = f"{exercise['exercise_name']} {exercise['description']} {exercise['benefits']}"
             embedding = clinical_rag.model.encode(combined_text, normalize_embeddings=True).tolist()
@@ -412,28 +478,32 @@ def seed_sample_data():
 
 @app.route('/api/patients', methods=['GET'])
 def get_patients():
-    """Get a list of all patients"""
+    """Get a list of all patients with explicit field selection"""
     try:
         conn = clinical_rag.get_db_connection()
         cursor = conn.cursor()
         
+        # Explicitly select specific fields to avoid issues with column order
         cursor.execute(
-            f"SELECT * FROM {clinical_rag.PATIENT_TABLE}"
+            f"""
+            SELECT id, patient_id, name, age, gender, condition, 
+                   medical_history, current_treatment, treatment_outcomes,
+                   progress_notes, assessment, adherence_rate
+            FROM {clinical_rag.PATIENT_TABLE}
+            """
         )
+        
+        # Get column names from cursor description
+        column_names = [column[0].lower() for column in cursor.description]
         
         patients = []
         for row in cursor.fetchall():
-            patients.append({
-                "id": row[0],
-                "patient_id": row[1],
-                "name": row[2],
-                "age": row[3],
-                "condition": row[4],
-                "medical_history": row[5],
-                "current_treatment": row[6],
-                "progress_notes": row[7],
-                "assessment": row[8]
-            })
+            # Create a dictionary with explicit key-value pairs
+            patient_dict = {}
+            for i, col_name in enumerate(column_names):
+                patient_dict[col_name] = row[i]
+            
+            patients.append(patient_dict)
         
         cursor.close()
         conn.close()
@@ -443,6 +513,8 @@ def get_patients():
         return response
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # This will print the full error stack trace to your console
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/patients/count', methods=['GET'])
@@ -473,37 +545,34 @@ def get_patient_details(patient_id):
         conn = clinical_rag.get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute(
-            f"SELECT * FROM {clinical_rag.PATIENT_TABLE} WHERE id = ?",
-            (patient_id,)
-        )
+        # Get the column names from the table to ensure proper field mapping
+        cursor.execute(f"SELECT * FROM {clinical_rag.PATIENT_TABLE} WHERE id = ?", (patient_id,))
         
+        # Get column names from cursor description
+        column_names = [column[0] for column in cursor.description]
+        
+        # Fetch the patient data
         row = cursor.fetchone()
         if not row:
             cursor.close()
             conn.close()
             return jsonify({"error": "Patient not found"}), 404
         
-        patient = {
-            "id": row[0],
-            "patient_id": row[1],
-            "name": row[2],
-            "condition": row[3],
-            "medical_history": row[4],
-            "current_treatment": row[5],
-            "progress_notes": row[6],
-            "assessment": row[7]
-        }
+        # Create a dictionary with explicit key-value pairs to ensure correct mapping
+        patient = {}
+        for i, column_name in enumerate(column_names):
+            # Skip vector fields
+            if not column_name.startswith('embedded_'):
+                patient[column_name.lower()] = row[i]
         
         # Get relevant exercises for this patient's condition
         cursor.execute(
             f"""
-            SELECT exercise_name, description, benefits
+            SELECT TOP 3 exercise_name, description, benefits
             FROM {clinical_rag.EXERCISES_TABLE}
             WHERE condition = ?
-            LIMIT 3
             """,
-            (patient["condition"],)
+            (patient.get("condition", ""),)
         )
         
         exercises = []
@@ -516,12 +585,44 @@ def get_patient_details(patient_id):
         
         patient["recommended_exercises"] = exercises
         
+        # Get assigned exercises for this patient
+        cursor.execute(
+            f"""
+            SELECT pe.id, pe.exercise_id, pe.assigned_date, pe.status, pe.notes,
+                   e.exercise_name, e.description, e.benefits, e.contraindications, e.severity
+            FROM {clinical_rag.SCHEMA_NAME}.PatientExercises pe
+            JOIN {clinical_rag.EXERCISES_TABLE} e ON pe.exercise_id = e.id
+            WHERE pe.patient_id = ?
+            ORDER BY pe.assigned_date DESC
+            """,
+            (patient_id,)
+        )
+        
+        assigned_exercises = []
+        for row in cursor.fetchall():
+            assigned_exercises.append({
+                "id": row[0],
+                "exercise_id": row[1],
+                "assigned_date": row[2],
+                "status": row[3],
+                "notes": row[4],
+                "exercise_name": row[5],
+                "description": row[6],
+                "benefits": row[7],
+                "contraindications": row[8],
+                "severity": row[9]
+            })
+        
+        patient["assigned_exercises"] = assigned_exercises
+        
         cursor.close()
         conn.close()
         
         return jsonify({"patient": patient})
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/patient', methods=['POST'])
@@ -563,27 +664,151 @@ def delete_patient(patient_id):
 
 @app.route('/api/patient/<int:patient_id>', methods=['PUT'])
 def update_patient_progress(patient_id):
-    """Update a patient's progress notes and assessment"""
+    """Update all editable fields for a patient"""
     try:
         data = request.json
+        print(f"Received update for patient {patient_id}: {data}")
         
-        # Validate required fields
-        if "progress_notes" not in data or "assessment" not in data:
-            return jsonify({"error": "Missing required fields: progress_notes and assessment"}), 400
+        # Connect to the database
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
         
-        # Update patient using RAG service
-        result = clinical_rag.update_progress_notes(
-            patient_id,
-            data["progress_notes"],
-            data["assessment"]
+        # First check if the patient exists
+        cursor.execute(
+            f"SELECT id FROM {clinical_rag.PATIENT_TABLE} WHERE id = ?",
+            (patient_id,)
         )
         
-        if result.get("status") == "error":
-            return jsonify(result), 404
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"status": "error", "message": "Patient not found"}), 404
+        
+        # Build the update query dynamically based on what fields were provided
+        update_fields = []
+        params = []
+        
+        # Add all editable fields (except patient_id which is not editable)
+        if "name" in data:
+            update_fields.append("name = ?")
+            params.append(data["name"])
+            
+        if "age" in data:
+            update_fields.append("age = ?")
+            params.append(data["age"])
+
+        if "gender" in data:
+            update_fields.append("gender = ?")
+            params.append(data["gender"])
+            
+        if "condition" in data:
+            update_fields.append("condition = ?")
+            params.append(data["condition"])
+            
+        if "medical_history" in data:
+            update_fields.append("medical_history = ?")
+            params.append(data["medical_history"])
+            
+        if "current_treatment" in data:
+            update_fields.append("current_treatment = ?")
+            params.append(data["current_treatment"])
+        
+        # Always include progress_notes and assessment as they were in the original function
+        if "progress_notes" in data:
+            update_fields.append("progress_notes = ?")
+            params.append(data["progress_notes"])
+            
+        if "assessment" in data:
+            update_fields.append("assessment = ?")
+            params.append(data["assessment"])
+        
+        # If there's nothing to update, return early
+        if not update_fields:
+            return jsonify({"status": "warning", "message": "No fields to update"})
+        
+        # Create the embedded notes for vector search
+        # We need to get current values for fields that aren't being updated
+        cursor.execute(
+            f"""
+            SELECT medical_history, current_treatment, progress_notes, assessment
+            FROM {clinical_rag.PATIENT_TABLE}
+            WHERE id = ?
+            """,
+            (patient_id,)
+        )
+        current_data = cursor.fetchone()
+        
+        # Prepare data for vector embedding - use new values where provided, otherwise use current values
+        medical_history = data.get("medical_history", current_data[0])
+        current_treatment = data.get("current_treatment", current_data[1])
+        progress_notes = data.get("progress_notes", current_data[2])
+        assessment = data.get("assessment", current_data[3])
+        
+        # Create a new embedding for the combined text
+        combined_text = f"{medical_history} {current_treatment} {progress_notes} {assessment}"
+        embedding = clinical_rag.model.encode(combined_text, normalize_embeddings=True).tolist()
+        
+        # Add the embedding update to our query
+        update_fields.append("embedded_notes = TO_VECTOR(?)")
+        params.append(str(embedding))
+        
+        # Add the patient_id as the last parameter for the WHERE clause
+        params.append(patient_id)
+        
+        # Execute the update query
+        update_query = f"""
+            UPDATE {clinical_rag.PATIENT_TABLE}
+            SET {', '.join(update_fields)}
+            WHERE id = ?
+        """
+        
+        print(f"Executing query: {update_query}")
+        print(f"With parameters: {params}")
+        
+        cursor.execute(update_query, params)
+        
+        # If an exercise_id was provided, also assign that exercise
+        if "exercise_id" in data and data["exercise_id"]:
+            try:
+                exercise_id = data["exercise_id"]
+                exercise_notes = data.get("exercise_notes", "Assigned during progress update")
+                
+                # Get the next ID
+                cursor.execute(f"SELECT MAX(id) FROM {clinical_rag.SCHEMA_NAME}.PatientExercises")
+                max_id = cursor.fetchone()[0]
+                new_id = 1 if max_id is None else max_id + 1
+                
+                # Get current date
+                from datetime import datetime
+                assigned_date = datetime.now().strftime("%Y-%m-%d")
+                
+                # Insert the exercise assignment
+                cursor.execute(
+                    f"INSERT INTO {clinical_rag.SCHEMA_NAME}.PatientExercises VALUES (?, ?, ?, ?, ?, ?)",
+                    (new_id, patient_id, exercise_id, assigned_date, "Assigned", exercise_notes)
+                )
+                
+                result = {"status": "success", "exercise_assigned": True}
+            except Exception as e:
+                # If exercise assignment fails, log it but don't fail the whole request
+                print(f"Error assigning exercise: {str(e)}")
+                result = {
+                    "status": "success", 
+                    "exercise_assigned": False,
+                    "exercise_error": str(e)
+                }
+        else:
+            result = {"status": "success"}
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
         
         return jsonify(result)
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/exercises', methods=['GET'])
@@ -611,6 +836,7 @@ def get_exercises():
                 "condition": row[1],
                 "severity": row[2],
                 "name": row[3],
+                "exercise_name": row[3],
                 "description": row[4],
                 "benefits": row[5],
                 "contraindications": row[6]
@@ -701,6 +927,294 @@ def add_guideline():
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+
+@app.route('/api/patient/<int:patient_id>/exercises', methods=['GET'])
+def get_patient_exercises(patient_id):
+    """Get exercises assigned to a specific patient"""
+    try:
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get assigned exercises with their details
+        cursor.execute(f"""
+            SELECT pe.id, pe.exercise_id, pe.assigned_date, pe.status, pe.notes,
+                   e.exercise_name, e.description, e.benefits, e.contraindications, e.severity
+            FROM {clinical_rag.SCHEMA_NAME}.PatientExercises pe
+            JOIN {clinical_rag.EXERCISES_TABLE} e ON pe.exercise_id = e.id
+            WHERE pe.patient_id = ?
+            ORDER BY pe.assigned_date DESC
+        """, (patient_id,))
+        
+        exercises = []
+        for row in cursor.fetchall():
+            exercises.append({
+                "id": row[0],
+                "exercise_id": row[1],
+                "assigned_date": row[2],
+                "status": row[3],
+                "notes": row[4],
+                "exercise_name": row[5],
+                "description": row[6],
+                "benefits": row[7],
+                "contraindications": row[8],
+                "severity": row[9]
+            })
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"exercises": exercises})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patient/<int:patient_id>/exercises', methods=['POST'])
+def assign_patient_exercise(patient_id):
+    """Assign an exercise to a patient"""
+    try:
+        data = request.json
+        
+        # Validate required fields
+        if "exercise_id" not in data:
+            return jsonify({"error": "Exercise ID is required"}), 400
+        
+        # Default values if not provided
+        from datetime import datetime
+        assigned_date = data.get("assigned_date", datetime.now().strftime("%Y-%m-%d"))
+        status = data.get("status", "Assigned")
+        notes = data.get("notes", "")
+        
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get the next ID
+        cursor.execute(f"SELECT MAX(id) FROM {clinical_rag.SCHEMA_NAME}.PatientExercises")
+        max_id = cursor.fetchone()[0]
+        new_id = 1 if max_id is None else max_id + 1
+        
+        # Insert the exercise assignment
+        cursor.execute(
+            f"INSERT INTO {clinical_rag.SCHEMA_NAME}.PatientExercises VALUES (?, ?, ?, ?, ?, ?)",
+            (new_id, patient_id, data["exercise_id"], assigned_date, status, notes)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"id": new_id, "status": "success"}), 201
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patient/<int:patient_id>/exercises/<int:assignment_id>', methods=['PUT'])
+def update_patient_exercise(patient_id, assignment_id):
+    """Update the status of an assigned exercise"""
+    try:
+        data = request.json
+        
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if assignment exists
+        cursor.execute(
+            f"SELECT id FROM {clinical_rag.SCHEMA_NAME}.PatientExercises WHERE id = ? AND patient_id = ?",
+            (assignment_id, patient_id)
+        )
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Exercise assignment not found"}), 404
+        
+        # Update fields
+        updates = []
+        params = []
+        
+        if "status" in data:
+            updates.append("status = ?")
+            params.append(data["status"])
+        
+        if "notes" in data:
+            updates.append("notes = ?")
+            params.append(data["notes"])
+        
+        if not updates:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "No fields to update"}), 400
+        
+        # Execute update
+        params.extend([assignment_id, patient_id])
+        cursor.execute(
+            f"UPDATE {clinical_rag.SCHEMA_NAME}.PatientExercises SET {', '.join(updates)} WHERE id = ? AND patient_id = ?",
+            params
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"status": "success"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patient/<int:patient_id>/exercises/<int:assignment_id>', methods=['DELETE'])
+def delete_patient_exercise(patient_id, assignment_id):
+    """Remove an assigned exercise from a patient"""
+    try:
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if assignment exists
+        cursor.execute(
+            f"SELECT id FROM {clinical_rag.SCHEMA_NAME}.PatientExercises WHERE id = ? AND patient_id = ?",
+            (assignment_id, patient_id)
+        )
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Exercise assignment not found"}), 404
+        
+        # Delete the assignment
+        cursor.execute(
+            f"DELETE FROM {clinical_rag.SCHEMA_NAME}.PatientExercises WHERE id = ? AND patient_id = ?",
+            (assignment_id, patient_id)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"status": "success"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/patient/<int:patient_id>/similar', methods=['GET'])
+def get_similar_patients(patient_id):
+    """Get similar patients using IRIS vector search"""
+    try:
+        limit = request.args.get('limit', 3, type=int)
+        result = clinical_rag.find_similar_patients_iris_vector(patient_id, limit=limit)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in similar patients endpoint: {e}")
+        return jsonify({"error": str(e), "similar_patients": []})
+
+@app.route('/api/exercises/search', methods=['POST'])
+def search_exercises_by_description():
+    """Search for exercises using semantic matching based on a text description"""
+    try:
+        data = request.json
+        
+        # Validate required fields
+        if "query" not in data:
+            return jsonify({"error": "Query text is required"}), 400
+        
+        # Optional condition filter
+        condition = data.get("condition", None)
+        
+        # Optional limit parameter
+        limit = data.get("limit", 5)
+        
+        # Use the RAG pipeline to search exercises by description
+        result = clinical_rag.find_exercises_by_description(
+            data["query"], 
+            limit=limit,
+            condition=condition
+        )
+        
+        # Check if there was an error
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], int):
+            return jsonify(result[0]), result[1]
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/exercises/<int:exercise_id>', methods=['DELETE'])
+def delete_exercise(exercise_id):
+    """Delete an exercise recommendation from the database"""
+    try:
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if the exercise exists
+        cursor.execute(
+            f"SELECT id FROM {clinical_rag.EXERCISES_TABLE} WHERE id = ?",
+            (exercise_id,)
+        )
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Exercise not found"}), 404
+        
+        # Delete the exercise
+        cursor.execute(
+            f"DELETE FROM {clinical_rag.EXERCISES_TABLE} WHERE id = ?",
+            (exercise_id,)
+        )
+        
+        # Also remove any assignments of this exercise to patients
+        try:
+            cursor.execute(
+                f"DELETE FROM {clinical_rag.SCHEMA_NAME}.PatientExercises WHERE exercise_id = ?",
+                (exercise_id,)
+            )
+        except Exception:
+            # It's okay if this fails - maybe the table doesn't exist or there are no assignments
+            pass
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"status": "success", "message": "Exercise deleted successfully"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+
+@app.route('/api/guidelines/<int:guideline_id>', methods=['DELETE'])
+def delete_guideline(guideline_id):
+    """Delete a clinical guideline from the database"""
+    try:
+        conn = clinical_rag.get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if the guideline exists
+        cursor.execute(
+            f"SELECT id FROM {clinical_rag.GUIDELINES_TABLE} WHERE id = ?",
+            (guideline_id,)
+        )
+        
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Guideline not found"}), 404
+        
+        # Delete the guideline
+        cursor.execute(
+            f"DELETE FROM {clinical_rag.GUIDELINES_TABLE} WHERE id = ?",
+            (guideline_id,)
+        )
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"status": "success", "message": "Guideline deleted successfully"})
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/debug/patients', methods=['GET'])
 def debug_patients():
@@ -775,5 +1289,9 @@ def chat():
             "error": str(e)
         }), 500
 
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5011)
+    # Start the Flask application
+    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5011)

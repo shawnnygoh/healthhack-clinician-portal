@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Home, Users, Calendar, Settings, HelpCircle } from "lucide-react"
+import { Home, Users, Calendar, Settings, HelpCircle, BookOpen } from "lucide-react"
 import {
   Sidebar,
   SidebarContent,
@@ -18,6 +18,7 @@ const menuItems = [
   { icon: Home, label: "Dashboard", href: "/" },
   { icon: Users, label: "Patients", href: "/patients" },
   { icon: Calendar, label: "Appointments", href: "/appointments" },
+  { icon: BookOpen, label: "Knowledge Base", href: "/exercises" },
   { icon: Settings, label: "Settings", href: "/settings" },
   { icon: HelpCircle, label: "Help", href: "/help" },
 ]

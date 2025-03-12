@@ -27,14 +27,17 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 const formSchema = z.object({
   patient_id: z.string().min(1, { message: "Patient ID is required" }),
   name: z.string().min(1, { message: "Name is required" }),
   age: z.coerce.number().int().positive({ message: "Age must be a positive number" }),
+  gender: z.string().min(1, { message: "Gender is required" }),
   condition: z.string().min(1, { message: "Condition is required" }),
   medical_history: z.string().min(1, { message: "Medical history is required" }),
   current_treatment: z.string().min(1, { message: "Current treatment is required" }),
+  treatment_outcomes: z.string().optional(),
   progress_notes: z.string(),
   assessment: z.string().min(1, { message: "Assessment is required" }),
 })
@@ -49,9 +52,11 @@ export function AddPatientSheet() {
       patient_id: "",
       name: "",
       age: undefined,
+      gender: "",
       condition: "",
       medical_history: "",
       current_treatment: "",
+      treatment_outcomes: "",
       progress_notes: "",
       assessment: "",
     },
@@ -126,6 +131,32 @@ export function AddPatientSheet() {
                 </FormItem>
               )}
             />
+
+            <FormField
+              control={form.control}
+              name="gender"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Gender</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select gender" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="Male">Male</SelectItem>
+                      <SelectItem value="Female">Female</SelectItem>
+                      <SelectItem value="Other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             
             <FormField
               control={form.control}
@@ -168,6 +199,24 @@ export function AddPatientSheet() {
                   <FormControl>
                     <Textarea 
                       placeholder="Current treatment plan" 
+                      className="resize-none min-h-[100px]" 
+                      {...field} 
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="treatment_outcomes"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Treatment Outcomes (Optional)</FormLabel>
+                  <FormControl>
+                    <Textarea 
+                      placeholder="Any observed outcomes from treatments" 
                       className="resize-none min-h-[100px]" 
                       {...field} 
                     />

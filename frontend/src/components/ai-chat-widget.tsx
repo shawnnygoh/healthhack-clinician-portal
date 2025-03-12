@@ -7,9 +7,8 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
-import ReactMarkdown from 'react-markdown'
 import { useUserContext } from '@/context/UserContext'
-import remarkGfm from 'remark-gfm';
+import axios from "axios"
 
 interface PatientInfo {
   id: string
@@ -50,14 +49,6 @@ export function AIChatWidget() {
     scrollToBottom()
   }, [messages, isTyping])
 
-  const formatResponseText = (text: string) => {
-    const cleanedText = text.replace(/\n{3,}/g, '\n\n');
-    
-    const withMarkdownBullets = cleanedText.replace(/^•\s+(.+)$/gm, '* $1');
-    
-    return withMarkdownBullets;
-  };
-
   const getFirstName = (fullName: string | undefined) => {
     if (!fullName) return 'Clinician';
     
@@ -79,40 +70,45 @@ export function AIChatWidget() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!query.trim() || isTyping) return
-
+  
     // Add user query to messages
     setMessages(prev => [...prev, { type: "query", text: query }])
     setIsTyping(true)
-
+  
     try {
       // Send query to backend with CORS headers
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        mode: 'cors', // Explicitly set CORS mode
-        body: JSON.stringify({ 
+      const response = await axios.post(
+        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/chat`, 
+        { 
           query, 
-          patient_id: currentPatient 
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server responded with status: ${response.status}`);
+          patient_id: currentPatient,
+          condition: null
+        }
+      );
+  
+      // Log raw response for debugging
+      console.log("Raw API response:", response.data);
+      
+      // Check if we have a response property in the data
+      if (!response.data.hasOwnProperty('response')) {
+        console.error("Missing 'response' property in API response:", response.data);
+        throw new Error("Invalid response format from server");
       }
-
-      const data = await response.json();
+  
+      // The actual response is directly in data.response
+      const responseText = response.data.response;
       
-      // Format the response text for better display
-      const formattedResponse = formatResponseText(data.response);
+      // Log the responseText for debugging
+      console.log("Response text:", responseText);
       
+      // Save any supporting evidence if available
+      const supportingEvidence = response.data.supporting_evidence || {};
+  
       setTimeout(() => {
         setMessages(prev => [...prev, { 
           type: "response", 
-          text: formattedResponse,
-          raw_data: data.supporting_evidence 
+          text: responseText || "Sorry, I couldn't generate a useful response. Please try rephrasing your question.",
+          raw_data: supportingEvidence
         }]);
         setIsTyping(false);
       }, 600);
@@ -125,8 +121,8 @@ export function AIChatWidget() {
       }]);
       setIsTyping(false);
     }
-
-    setQuery("")
+  
+    setQuery("");
   };
 
   // Function to set the current patient context
@@ -261,11 +257,22 @@ export function AIChatWidget() {
                       : "bg-gray-100"
                   )}
                 >
+            
+
                   {message.type === "response" ? (
-                    <div className="prose prose-sm max-w-none">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.text}
-                      </ReactMarkdown>
+                    <div className="prose prose-sm max-w-none space-y-4">
+                      {/* Split by paragraphs and add spacing between them */}
+                      {message.text.split('\n\n').length === 1 ? 
+                        // If there are no paragraph breaks, split by single newlines instead
+                        message.text.split('\n').map((paragraph, i) => (
+                          <p key={i} className="mb-4">{paragraph}</p>
+                        ))
+                        :
+                        // Otherwise use double newlines as intended
+                        message.text.split('\n\n').map((paragraph, i) => (
+                          <p key={i} className="mb-4">{paragraph}</p>
+                        ))
+                      }
                     </div>
                   ) : (
                     <p className="whitespace-pre-wrap font-sans text-sm">

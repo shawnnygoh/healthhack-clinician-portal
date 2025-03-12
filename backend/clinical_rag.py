@@ -1,11 +1,11 @@
 import os
 import iris
-import json
 from sentence_transformers import SentenceTransformer
 import numpy as np
 from dotenv import load_dotenv
 from direct_groq import generate_llm_response
 import atexit
+import torch
 
 # Load environment variables if not already loaded
 env_file_path = '.env.local'
@@ -14,6 +14,8 @@ if os.path.exists(env_file_path):
 else:
     # Try loading from .env if .env.local doesn't exist
     load_dotenv()
+
+_model = None
 
 class ClinicalRAG:
     def __init__(self):
@@ -33,22 +35,21 @@ class ClinicalRAG:
         self.PATIENT_TABLE = f"{self.SCHEMA_NAME}.PatientData"
         self.GUIDELINES_TABLE = f"{self.SCHEMA_NAME}.ClinicalGuidelines"
         self.EXERCISES_TABLE = f"{self.SCHEMA_NAME}.ExerciseRecommendations"
-        
-        # System prompt for the LLM
+
         self.system_prompt = """
-        You are Iris, an AI clinical assistant for rehabilitation professionals. You provide evidence-based 
-        recommendations and information about rehabilitation treatments, exercises, and guidelines.
-        
-        When responding:
-        - Be conversational, warm and clear - speak directly to the clinician as if you're having a chat
-        - Present information in a cohesive, flowing narrative rather than formal academic sections
-        - Synthesize all provided context information into a unified, helpful response
-        - Ground your responses in the provided patient data and clinical evidence
-        - If you don't have enough information, acknowledge this briefly and suggest what would help
-        - When discussing exercises, include practical details rather than just theory
-        
-        Focus on being helpful and practical rather than comprehensive or academic. The clinician needs 
-        actionable information they can use immediately with their patients.
+        You are Iris, a clinical assistant for rehabilitation professionals. Provide concise, practical information about patients, treatments, and exercises.
+
+        Guidelines:
+        - Be extremely concise - only include essential information
+        - Always add proper spacing between paragraphs (use double line breaks)
+        - After first mention, refer to patients by their first name only
+        - Never mention limitations in data unless directly asked
+        - Never speculate beyond available information
+        - Don't suggest actions unless directly asked for recommendations
+        - Only mention exercises or treatments if directly relevant to the query
+        - Focus on facts, not opinions or encouragement
+
+        Your responses should be direct, factual, and to-the-point. Avoid phrases like "we don't have information on" or "I think" or "it's recommended that".
         """
 
         try:
@@ -56,9 +57,28 @@ class ClinicalRAG:
         except Exception as e:
             print(f"Error initializing SentenceTransformer: {e}")
             self.model = None
-            
+        
+        # Use the global model instance or create it if it doesn't exist
+        global _model
+        if _model is None:
+            print("Initializing SentenceTransformer model...")
+            _model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.model = _model
+
         # Register cleanup method
         atexit.register(self.cleanup)
+
+    def _cleanup_resources(self):
+        """Clean up resources when the application exits"""
+        global _model
+        if _model is not None:
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Delete model reference
+            _model = None
+            print("Cleaned up SentenceTransformer resources")
     
     def get_db_connection(self):
         """Create and return a connection to the IRIS database"""
@@ -69,8 +89,8 @@ class ClinicalRAG:
         try:
             cursor.execute(
                 f"""
-                SELECT id, patient_id as external_id, name, condition, medical_history, 
-                    current_treatment, progress_notes, assessment 
+                SELECT id, patient_id as external_id, name, age, gender, condition, medical_history, 
+                    current_treatment, progress_notes, assessment, treatment_outcomes 
                 FROM {self.PATIENT_TABLE} 
                 WHERE id = ?
                 """,
@@ -87,11 +107,14 @@ class ClinicalRAG:
                 p_id = row[0]
                 external_id = row[1]
                 name = row[2]
-                condition = row[3]
-                medical_history = row[4]
-                current_treatment = row[5]
-                progress_notes = row[6]
-                assessment = row[7]
+                age = row[3]
+                gender = row[4]
+                condition = row[5]
+                medical_history = row[6]
+                current_treatment = row[7]
+                progress_notes = row[8]
+                assessment = row[9]
+                treatment_outcomes = row[10] if len(row) > 10 else None
             except Exception as e:
                 print(f"Error extracting row data: {e}")
                 # Try with dictionary-like access
@@ -99,11 +122,14 @@ class ClinicalRAG:
                     p_id = row["id"]
                     external_id = row["external_id"]
                     name = row["name"]
+                    age = row["age"]
+                    gender = row["gender"]
                     condition = row["condition"]
                     medical_history = row["medical_history"]
                     current_treatment = row["current_treatment"]
                     progress_notes = row["progress_notes"]
                     assessment = row["assessment"]
+                    treatment_outcomes = row.get("treatment_outcomes", None)
                 except Exception as e2:
                     print(f"Error extracting row data as dict: {e2}")
                     return None
@@ -164,15 +190,19 @@ class ClinicalRAG:
                 print(f"Error retrieving guidelines: {e}")
                 guidelines = []
             
+            # Create the final patient info dictionary with all available fields
             return {
                 "id": p_id,
                 "patient_id": external_id,
                 "name": name,
+                "age": age,  # Make sure age is included
+                "gender": gender,  # Make sure gender is included
                 "condition": condition,
                 "medical_history": medical_history,
                 "current_treatment": current_treatment,
                 "progress_notes": progress_notes,
                 "assessment": assessment,
+                "treatment_outcomes": treatment_outcomes,
                 "recommended_exercises": exercises,
                 "relevant_guidelines": guidelines
             }
@@ -301,86 +331,181 @@ class ClinicalRAG:
             traceback.print_exc()
             return None
 
-    def process_query(self, query, patient_id=None, condition=None):
+    def process_query(self, query_text, patient_id=None, condition_filter=None):
         """
-        Process a clinical query using improved RAG retrieval
+        Process a clinical query using intent-based RAG retrieval with specialized handlers
         """
-        # Retrieve relevant information from the database
-        patient_info = None
-        guidelines = None
-        exercises = None
+        # Check explicitly for similar patients queries
+        if any(phrase in query_text.lower() for phrase in [
+            "similar patient", "similar patients", "patients like", "patient like", 
+            "patients similar", "who are similar", "which patients"
+        ]) and not "based on" in query_text.lower():
+            print("Detected direct query about similar patients, using specialized handler")
+            # Use our specialized handler for similar patient queries
+            result = self.handle_similar_patients_query(query_text, patient_id)
+            
+            # If the patient is found by name but not ID
+            if not patient_id:
+                import re
+                patient_name_match = re.search(r"(?:patient|about|to|for|like)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", query_text, re.IGNORECASE)
+                if patient_name_match:
+                    patient_name = patient_name_match.group(1)
+                    print(f"Extracted patient name for similar patients query: {patient_name}")
+                    
+                    conn = self.get_db_connection()
+                    cursor = conn.cursor()
+                    try:
+                        patient_info = self.find_patient_by_name(cursor, patient_name)
+                        if patient_info and 'id' in patient_info:
+                            print(f"Found patient by name: {patient_info['name']} with ID: {patient_info['id']}")
+                            result = self.handle_similar_patients_query(query_text, patient_info['id'])
+                    finally:
+                        cursor.close()
+                        conn.close()
+            
+            return result
+            
+        # Check for treatment recommendations based on similar patients
+        if any(phrase in query_text.lower() for phrase in [
+            "based on similar patient", "based on similar patients", 
+            "from similar patient", "from similar patients",
+            "like other patient", "like other patients"
+        ]):
+            print("Detected query about treatments based on similar patients")
+            result = self.handle_treatment_recommendation_query(query_text, patient_id)
+            
+            # If the patient is found by name but not ID
+            if not patient_id:
+                import re
+                patient_name_match = re.search(r"(?:patient|about|to|for|like)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", query_text, re.IGNORECASE)
+                if patient_name_match:
+                    patient_name = patient_name_match.group(1)
+                    print(f"Extracted patient name for recommendation query: {patient_name}")
+                    
+                    conn = self.get_db_connection()
+                    cursor = conn.cursor()
+                    try:
+                        patient_info = self.find_patient_by_name(cursor, patient_name)
+                        if patient_info and 'id' in patient_info:
+                            print(f"Found patient by name: {patient_info['name']} with ID: {patient_info['id']}")
+                            result = self.handle_treatment_recommendation_query(query_text, patient_info['id'])
+                    finally:
+                        cursor.close()
+                        conn.close()
+            
+            return result
         
+        # For all other queries, continue with normal processing
+        # Classify the intent
+        intent = self._classify_query_intent(query_text)
+        print(f"Query intent classified as: {intent}")
+        
+        # Initialize context and supporting evidence containers
+        context = {}
+        supporting_evidence = {}
+        
+        # Get DB connection
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
-            # Get comprehensive patient information if patient_id is provided
+            # Always retrieve basic patient info if patient_id provided
+            patient_info = None
             if patient_id:
                 print(f"Retrieving patient info for ID: {patient_id}")
                 patient_info = self._get_patient_info(cursor, patient_id)
-                if patient_info:
-                    print(f"Successfully retrieved patient info for: {patient_info.get('name', 'Unknown')}")
-                else:
-                    print(f"No patient found with ID: {patient_id}")
+                context["patient"] = patient_info
+                supporting_evidence["patient_info"] = patient_info
+                
+                # Get similar patients for context enrichment
+                similar_patients_result = self.find_similar_patients_iris_vector(patient_id, limit=3)
+                if isinstance(similar_patients_result, dict) and "similar_patients" in similar_patients_result:
+                    similar_patients = similar_patients_result["similar_patients"]
+                    context["similar_patients"] = similar_patients
+                    supporting_evidence["similar_patients"] = similar_patients
+                    print(f"Found {len(similar_patients)} similar patients")
             
-            # If no patient_id is provided, try to extract patient name from query
+            # Try to extract patient name if no ID provided
             if not patient_info:
                 import re
-                patient_name_patterns = [
-                    r"patient\s+([A-Za-z]+\s+[A-Za-z]+)",
-                    r"about\s+([A-Za-z]+\s+[A-Za-z]+)",
-                    r"for\s+([A-Za-z]+\s+[A-Za-z]+)",
-                ]
-                
-                patient_name = None
-                for pattern in patient_name_patterns:
-                    match = re.search(pattern, query, re.IGNORECASE)
-                    if match:
-                        patient_name = match.group(1)
-                        print(f"Extracted patient name: {patient_name}")
-                        break
-            
-                if patient_name:
-                    print(f"Attempting to find patient with extracted name: {patient_name}")
-                    try:
-                        patient_info = self.find_patient_by_name(cursor, patient_name)
-                        if patient_info:
-                            print(f"Successfully found patient by name: {patient_info['name']}")
-                        else:
-                            print(f"No patient found with name: {patient_name}")
-                    except Exception as e:
-                        print(f"Error finding patient by name: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-            
-            # Additional debugging for exercises and guidelines
-            if patient_info and "recommended_exercises" in patient_info:
-                exercises = patient_info.pop("recommended_exercises", [])
-                print(f"Found {len(exercises)} exercises for patient")
-            if patient_info and "relevant_guidelines" in patient_info:
-                guidelines = patient_info.pop("relevant_guidelines", [])
-                print(f"Found {len(guidelines)} guidelines for patient")
+                patient_name_match = re.search(r"(?:patient|about|to|for|like)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", query_text, re.IGNORECASE)
+                if patient_name_match:
+                    patient_name = patient_name_match.group(1)
+                    print(f"Extracted patient name: {patient_name}")
+                    patient_info = self.find_patient_by_name(cursor, patient_name)
+                    if patient_info:
+                        context["patient"] = patient_info
+                        supporting_evidence["patient_info"] = patient_info
+                        print(f"Found patient by name: {patient_info['name']}")
                         
-            # Generate a response based on the retrieved information
-            print("Attempting to generate response...")
-            try:
-                response = self._generate_response(query, patient_info, guidelines, exercises)
-                print("Response generated successfully")
-            except Exception as e:
-                print(f"Error generating response: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                response = self._generate_template_response(query, patient_info, guidelines, exercises)
-                print("Used fallback template response")
+                        # Now that we found a patient, get their condition
+                        if 'condition' in patient_info:
+                            condition_filter = patient_info['condition']
+                        
+                        # Also get similar patients for patient identified by name
+                        if 'id' in patient_info:
+                            similar_patients_result = self.find_similar_patients_iris_vector(patient_info['id'], limit=3)
+                            if isinstance(similar_patients_result, dict) and "similar_patients" in similar_patients_result:
+                                similar_patients = similar_patients_result["similar_patients"]
+                                context["similar_patients"] = similar_patients
+                                supporting_evidence["similar_patients"] = similar_patients
+                                print(f"Found {len(similar_patients)} similar patients for {patient_info['name']}")
+            
+            # Create embeddings for semantic search
+            query_embedding = self.model.encode(query_text, normalize_embeddings=True).tolist()
+            
+            # Only retrieve guidelines and exercises for relevant intents or when explicitly asked
+            if intent in ["RECOMMENDATION", "EXERCISE", "GUIDELINE"] or "guideline" in query_text.lower():
+                guidelines = self._get_relevant_guidelines(cursor, query_embedding, condition_filter)
+                if guidelines:
+                    context["guidelines"] = guidelines
+                    supporting_evidence["guidelines"] = guidelines
+                    print(f"Retrieved {len(guidelines)} relevant guidelines")
+            
+            if intent in ["RECOMMENDATION", "EXERCISE"] or "exercise" in query_text.lower():
+                exercises = self._get_relevant_exercises(cursor, query_embedding, condition_filter)
+                if exercises:
+                    context["exercises"] = exercises
+                    supporting_evidence["exercises"] = exercises
+                    print(f"Retrieved {len(exercises)} relevant exercises")
+            
+            # IMPORTANT: If we have patient info with recommended_exercises, include these in the context
+            if patient_info and 'recommended_exercises' in patient_info and patient_info['recommended_exercises']:
+                # If exercises aren't already in context, add them
+                if 'exercises' not in context:
+                    context['exercises'] = []
                 
-            return {
+                # Add the patient's recommended exercises to the context
+                if isinstance(patient_info['recommended_exercises'], list):
+                    context['exercises'].extend(patient_info['recommended_exercises'])
+                
+            # IMPORTANT: If we have patient info with relevant_guidelines, include these in the context
+            if patient_info and 'relevant_guidelines' in patient_info and patient_info['relevant_guidelines']:
+                # If guidelines aren't already in context, add them
+                if 'guidelines' not in context:
+                    context['guidelines'] = []
+                
+                # Add the patient's relevant guidelines to the context
+                if isinstance(patient_info['relevant_guidelines'], list):
+                    context['guidelines'].extend(patient_info['relevant_guidelines'])
+            
+            # Debug output to see what's in the context
+            print(f"Final context keys: {list(context.keys())}")
+            
+            # Generate response with intent-specific instructions
+            response = self._generate_response_with_llm(query_text, context, intent)
+            
+            # Debug the response before returning
+            print(f"Response content (first 100 chars): {response[:100] if response else 'None'}...")
+            
+            # Return in the expected format the API endpoint expects
+            result = {
                 "response": response,
-                "supporting_evidence": {
-                    "patient_info": patient_info,
-                    "guidelines": guidelines,
-                    "exercises": exercises
-                }
+                "supporting_evidence": supporting_evidence
             }
+            
+            print(f"Returning response object: {str(result)[:200]}...")
+            return result
         
         except Exception as e:
             print(f"Error in process_query: {str(e)}")
@@ -388,7 +513,7 @@ class ClinicalRAG:
             traceback.print_exc()
             return {
                 "response": f"I apologize, but I encountered an error while processing your query. Please try again or rephrase your question. Technical details: {str(e)}",
-                "supporting_evidence": None
+                "supporting_evidence": {}
             }
         
         finally:
@@ -439,167 +564,471 @@ class ClinicalRAG:
             })
         
         return exercises
-    
-    def _generate_response(self, query, patient_info, guidelines, exercises):
-        """
-        Generate a response based on the retrieved information
+
+    def _classify_query_intent(self, query_text):
+        """Classify the intent of the user query"""
         
-        Uses Groq LLM when available, falls back to template-based responses if not
+        # Check for similar patients query first
+        if any(x in query_text.lower() for x in ["similar patient", "similar patients", "patients like", "patient like"]):
+            return "SIMILAR_PATIENTS"
+        
+        # Simple rule-based classification
+        query_lower = query_text.lower()
+        if any(x in query_lower for x in ["what is", "who is", "tell me about", "information"]):
+            return "INFORMATION"
+        elif any(x in query_lower for x in ["recommend", "suggestion", "what should", "treatment"]):
+            return "RECOMMENDATION"
+        elif "exercise" in query_lower:
+            return "EXERCISE"
+        elif "guideline" in query_lower:
+            return "GUIDELINE"
+        else:
+            return "GENERAL"    
+
+    def _format_context(self, context):
+        """Format the context dictionary into a string for the LLM prompt"""
+        formatted_parts = []
+        
+        # Format patient information if available
+        if "patient" in context and context["patient"]:
+            patient = context["patient"]
+            patient_str = "PATIENT INFORMATION:\n"
+            patient_str += f"Name: {patient.get('name', 'Unknown')}\n"
+            
+            # Explicitly include age and gender if available
+            age = patient.get('age')
+            if age:
+                patient_str += f"Age: {age}\n"
+                
+            gender = patient.get('gender')
+            if gender:
+                patient_str += f"Gender: {gender}\n"
+                
+            patient_str += f"Diagnosis: {patient.get('condition', 'Unknown')}\n"
+            
+            # Include medical history
+            if patient.get('medical_history'):
+                patient_str += f"Medical History: {patient.get('medical_history')}\n"
+                
+            # Include current treatment
+            if patient.get('current_treatment'):
+                patient_str += f"Current Treatment: {patient.get('current_treatment')}\n"
+                
+            # Include progress notes
+            if patient.get('progress_notes'):
+                patient_str += f"Progress Notes: {patient.get('progress_notes')}\n"
+                
+            # Include assessment
+            if patient.get('assessment'):
+                patient_str += f"Assessment: {patient.get('assessment')}\n"
+                
+            # Include treatment outcomes if available
+            if patient.get('treatment_outcomes'):
+                patient_str += f"Treatment Outcomes: {patient.get('treatment_outcomes')}\n"
+                
+            formatted_parts.append(patient_str)
+        
+        # Format similar patients if available - improved section
+        if "similar_patients" in context and context["similar_patients"]:
+            similar_str = "SIMILAR PATIENTS:\n"
+            for i, patient in enumerate(context["similar_patients"], 1):
+                similar_str += f"{i}. {patient.get('name', 'Unknown Patient')}"
+                
+                # Add basic demographics
+                similar_str += f" - {patient.get('age', 'N/A')} year old"
+                if patient.get('gender'):
+                    similar_str += f" {patient.get('gender')}"
+                similar_str += f", {patient.get('condition', 'Unknown condition')}\n"
+                
+                # Add key treatment info in a concise format
+                if patient.get('current_treatment'):
+                    similar_str += f"   Treatment: {patient.get('current_treatment')}\n"
+                
+                # Add outcomes if available
+                if patient.get('treatment_outcomes'):
+                    similar_str += f"   Outcomes: {patient.get('treatment_outcomes')}\n"
+                
+                # Add similarity score
+                if patient.get('similarity_score'):
+                    similar_str += f"   Similarity: {patient.get('similarity_score')}\n"
+                
+                # Add separator between patients for readability
+                if i < len(context["similar_patients"]):
+                    similar_str += "\n"
+                    
+            formatted_parts.append(similar_str)
+        
+        # Format guidelines if available
+        if "guidelines" in context and context["guidelines"]:
+            guidelines_str = "RELEVANT CLINICAL GUIDELINES:\n"
+            for i, guideline in enumerate(context["guidelines"], 1):
+                guidelines_str += f"{i}. "
+                if "condition" in guideline:
+                    guidelines_str += f"For {guideline['condition']}: "
+                guidelines_str += f"{guideline.get('text', 'No content')}\n"
+                if guideline.get('source'):
+                    guidelines_str += f"   Source: {guideline.get('source')}\n"
+            formatted_parts.append(guidelines_str)
+        
+        # Format exercises if available
+        if "exercises" in context and context["exercises"]:
+            exercises_str = "RELEVANT EXERCISES:\n"
+            for i, exercise in enumerate(context["exercises"], 1):
+                exercises_str += f"{i}. {exercise.get('name', 'Untitled')}\n"
+                exercises_str += f"   Description: {exercise.get('description', 'No description')}\n"
+                exercises_str += f"   Benefits: {exercise.get('benefits', 'No benefits listed')}\n"
+                if exercise.get('contraindications'):
+                    exercises_str += f"   Contraindications: {exercise.get('contraindications')}\n"
+                if exercise.get('severity'):
+                    exercises_str += f"   Severity: {exercise.get('severity')}\n"
+            formatted_parts.append(exercises_str)
+        
+        # If no context was found, explicitly state that
+        if not formatted_parts:
+            return "No relevant context information found for this query."
+        
+        # Combine all parts with clear separation
+        return "\n\n".join(formatted_parts)
+    
+
+    def _generate_response_with_llm(self, query, context, intent):
         """
-        try:
-            print("Attempting to generate response with LLM...")
-            response = self._generate_response_with_llm(query, patient_info, guidelines, exercises)
-            print("Successfully generated LLM response")
-            return response
-        except Exception as e:
-            print(f"Error using Groq LLM: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fall back to template if LLM fails
-            print("Falling back to template response")
-            return self._generate_template_response(query, patient_info, guidelines, exercises)
-
-    def _generate_response_with_llm(self, query, patient_info, guidelines, exercises):
-        """Generate a response using the direct Groq integration with improved prompt structure and debugging"""
-        try:
-            print("\n==== Starting LLM Response Generation ====")
-            print(f"Query: {query}")
-            print(f"Patient info available: {patient_info is not None}")
-            print(f"Guidelines available: {len(guidelines) if guidelines else 0}")
-            print(f"Exercises available: {len(exercises) if exercises else 0}")
+        Generate a response using the LLM with context and intent-specific instructions.
+        """
+        # Format the context for insertion into the prompt
+        formatted_context = self._format_context(context)
+        
+        # Add intent-specific instructions based on query classification
+        if intent == "SIMILAR_PATIENTS":
+            specific_instructions = """
+            List only the similar patients found in the data without commentary or speculation.
             
-            # Format context
-            context_parts = []
+            For each patient include:
+            1. Name and age
+            2. Diagnosis
+            3. Current treatment
+            4. One key outcome or assessment detail
             
-            if patient_info:
-                print(f"Using patient info for: {patient_info.get('name', 'Unknown')}")
-                patient_context = f"""
-                PATIENT INFORMATION:
-                Name: {patient_info.get('name', 'Unknown')}
-                Condition: {patient_info.get('condition', 'Unknown')}
-                Medical History: {patient_info.get('medical_history', 'Not available')}
-                Current Treatment: {patient_info.get('current_treatment', 'Not available')}
-                Progress Notes: {patient_info.get('progress_notes', 'Not available')}
-                Assessment: {patient_info.get('assessment', 'Not available')}
-                """
-                context_parts.append(patient_context)
-            
-            if guidelines:
-                guidelines_context = "RELEVANT CLINICAL GUIDELINES:\n"
-                for i, guide in enumerate(guidelines, 1):
-                    condition_text = f" for {guide.get('condition', 'this condition')}" if guide.get('condition') else ""
-                    guidelines_context += f"- Guideline{condition_text}: {guide.get('text', 'No text available')} (Source: {guide.get('source', 'Unknown')})\n"
-                context_parts.append(guidelines_context)
-            
-            if exercises:
-                exercises_context = "RECOMMENDED EXERCISES:\n"
-                for i, ex in enumerate(exercises, 1):
-                    exercises_context += f"- {ex.get('name', 'Unknown exercise')} for {ex.get('condition', 'Unknown condition')} ({ex.get('severity', 'Unknown')} severity):\n"
-                    exercises_context += f"  Description: {ex.get('description', 'Not available')}\n"
-                    exercises_context += f"  Benefits: {ex.get('benefits', 'Not available')}\n"
-                    if ex.get('contraindications'):
-                        exercises_context += f"  Cautions: {ex.get('contraindications')}\n"
-                context_parts.append(exercises_context)
-            
-            # Combine all context
-            combined_context = "\n\n".join(context_parts)
-            
-            print("\n== Prompt Context ==")
-            print(combined_context[:500] + "..." if len(combined_context) > 500 else combined_context)
-            
-            # Updated system prompt to encourage brevity and natural style
-            improved_system_prompt = """
-            You are Iris, an AI clinical assistant for rehabilitation professionals. You provide evidence-based 
-            recommendations and information about rehabilitation treatments, exercises, and guidelines.
-            
-            IMPORTANT INSTRUCTIONS:
-            - Keep responses brief and to the point - 3-5 sentences is often enough unless detailed information is requested
-            - Use conversational, natural language as if speaking directly to a colleague
-            - Avoid formulaic introductions like "John Doe, let's take a closer look at his case"
-            - Reference medical guidelines but focus on practical advice when necessary
-            - Avoid lengthy, comprehensive responses unless specifically asked for detailed information
-            - Present key information in a concise manner
-            
-            Your responses should be helpful but brief, like a quick hallway consultation between clinicians.
+            Format with proper paragraph breaks. If no similar patients are found, simply state "No similar patients found in the database."
             """
+        elif intent == "INFORMATION":
+            specific_instructions = """
+            Provide only essential facts about the patient in 2-3 very short paragraphs.
             
-            # Define user_prompt
-            if patient_info:
-                user_prompt = f"""
-                Query from clinician: {query}
-                
-                Information about {patient_info.get('name', 'the patient')}:
-                
-                {combined_context}
-                
-                Provide a BRIEF, direct response focused on key information. Keep your answer concise (2-4 sentences) unless detailed information is explicitly requested.
-                """
-            else:
-                user_prompt = f"""
-                Query from clinician: {query}
-                
-                Information that may help answer this query:
-                
-                {combined_context}
-                
-                Provide a BRIEF, direct response focused on key information. Keep your answer concise (2-4 sentences) unless detailed information is explicitly requested.
-                """
+            First paragraph: Current diagnosis and key status.
             
-            print("\n== Calling Groq LLM ==")
-            # Generate response using direct Groq integration with improved system prompt
-            response = generate_llm_response(improved_system_prompt, user_prompt)
+            Second paragraph: Current treatment and specific progress metrics.
             
-            if response:
-                print("\n== Got LLM Response ==")
-                print(response[:500] + "..." if len(response) > 500 else response)
-                return response
-            else:
-                print("\n== LLM Response Failed, Using Template Fallback ==")
-                return self._generate_template_response(query, patient_info, guidelines, exercises)
+            Use only the patient's first name after first mention. Add proper paragraph breaks between paragraphs.
+            """
+        elif intent == "RECOMMENDATION":
+            specific_instructions = """
+            Provide exactly 1-2 specific recommendations based on the patient's needs.
             
-        except Exception as e:
-            print(f"\n==== ERROR in _generate_response_with_llm: {str(e)} ====")
-            import traceback
-            traceback.print_exc()
-            # Return a template response as fallback
-            return self._generate_template_response(query, patient_info, guidelines, exercises)
+            Keep it factual and direct - no encouraging language or speculation.
+            
+            Format with proper paragraph breaks.
+            """
+        elif intent == "EXERCISE":
+            specific_instructions = """
+            List 1-2 most relevant exercises with specific parameters.
+            
+            Format: Name, brief description, specific frequency/duration.
+            
+            Format with proper paragraph breaks.
+            """
+        elif intent == "GUIDELINE":
+            specific_instructions = """
+            Summarize only the single most relevant guideline.
+            
+            Keep it under 3 sentences and focused on the specific query.
+            
+            Format with proper paragraph breaks.
+            """
+        else:  # GENERAL
+            specific_instructions = """
+            Provide a direct answer in 1-2 very short paragraphs.
+            
+            Include only essential facts directly related to the query.
+            
+            Format with proper paragraph breaks.
+            """
+        
+        user_prompt = f"""Query: {query}
 
-    def _generate_template_response(self, query, patient_info, guidelines, exercises):
+        Context Information:
+        {formatted_context}
+
+        Instructions:
+        {specific_instructions}
+
+        Answer the query in a concise, focused way using the provided context information.
+        """
+
+        # Add these debug lines:
+        print(f"Context keys available: {list(context.keys())}")
+        print(f"Patient info in context: {bool('patient' in context)}")
+        if 'patient' in context:
+            print(f"Patient keys: {list(context['patient'].keys() if context['patient'] else [])}")
+        print(f"Similar patients in context: {bool('similar_patients' in context)}")
+        print(f"Formatted context (first 200 chars): {formatted_context[:200]}...")
+
+        # Then call the LLM
+        response = generate_llm_response(self.system_prompt, user_prompt)
+        
+        # Make sure to return the response
+        return response
+
+    def handle_similar_patients_query(self, query_text, patient_id):
+        """Directly handle queries about similar patients"""
+        if not patient_id:
+            return {
+                "response": "To find similar patients, please first focus on a specific patient.",
+                "supporting_evidence": {}
+            }
+            
+        # Get patient information first
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        patient_info = None
+        
+        try:
+            patient_info = self._get_patient_info(cursor, patient_id)
+            if not patient_info:
+                return {
+                    "response": "Patient information not found. Please check the patient ID.",
+                    "supporting_evidence": {}
+                }
+        finally:
+            cursor.close()
+            conn.close()
+            
+        # Get similar patients using our vector search
+        similar_patients_result = self.find_similar_patients_iris_vector(patient_id, limit=10)
+        
+        if (not isinstance(similar_patients_result, dict) or 
+            "similar_patients" not in similar_patients_result or
+            not similar_patients_result["similar_patients"]):
+            return {
+                "response": "No similar patients found in the database for this patient.",
+                "supporting_evidence": {"patient_info": patient_info}
+            }
+        
+        all_similar_patients = similar_patients_result["similar_patients"]
+        patient_condition = patient_info.get('condition')
+        
+        # Filter only high and medium matches with same condition
+        filtered_patients = []
+        for patient in all_similar_patients:
+            # Only include patients with the same condition
+            if patient_condition and patient.get('condition') != patient_condition:
+                continue
+                
+            # Only include high and medium similarity scores
+            similarity = patient.get('similarity_score', '')
+            raw_score = patient.get('raw_score', 0)
+            
+            if (similarity == 'High' or similarity == 'Medium' or 
+                (isinstance(raw_score, (int, float)) and raw_score >= 0.6)):
+                filtered_patients.append(patient)
+        
+        # Limit to top 3 most similar
+        similar_patients = filtered_patients[:3]
+        
+        supporting_evidence = {
+            "patient_info": patient_info,
+            "similar_patients": similar_patients
+        }
+        
+        if not similar_patients:
+            return {
+                "response": f"No patients with similar profiles to this patient found with the same condition ({patient_condition}).",
+                "supporting_evidence": supporting_evidence
+            }
+        
+        # Build a clear, simple response
+        response = f"Similar patients with {patient_condition}:\n\n"
+        
+        for i, patient in enumerate(similar_patients, 1):
+            name = patient.get('name', 'Unknown')
+            age = patient.get('age', 'Unknown age')
+            condition = patient.get('condition', 'Unknown condition')
+            treatment = patient.get('current_treatment', 'No treatment info')
+            outcomes = patient.get('treatment_outcomes', '')
+            
+            response += f"{i}. {name}, {age}, {condition}, {treatment}"
+            if outcomes:
+                response += f", {outcomes}"
+            response += "\n\n"
+        
+        return {
+            "response": response,
+            "supporting_evidence": supporting_evidence
+        }
+
+    def handle_treatment_recommendation_query(self, query_text, patient_id):
+        """Handle queries about treatment recommendations based on similar patients with improved formatting"""
+        if not patient_id:
+            return {
+                "response": "To provide treatment recommendations based on similar patients, please first focus on a specific patient.",
+                "supporting_evidence": {}
+            }
+        
+        # Get the patient's information
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        patient_info = None
+        similar_patients = []
+        
+        try:
+            patient_info = self._get_patient_info(cursor, patient_id)
+            if not patient_info:
+                return {
+                    "response": "Patient information not found. Please check the patient ID.",
+                    "supporting_evidence": {}
+                }
+            
+            # Find similar patients
+            similar_patients_result = self.find_similar_patients_iris_vector(patient_id, limit=5)
+            if isinstance(similar_patients_result, dict) and "similar_patients" in similar_patients_result:
+                all_similar = similar_patients_result["similar_patients"]
+                
+                # Filter to get only patients with same condition and high/medium similarity
+                for patient in all_similar:
+                    if (patient.get('condition') == patient_info.get('condition') and 
+                        (patient.get('similarity_score') in ['High', 'Medium'] or
+                        patient.get('raw_score', 0) >= 0.6)):
+                        similar_patients.append(patient)
+                
+                # Limit to top 3
+                similar_patients = similar_patients[:3]
+        
+        finally:
+            cursor.close()
+            conn.close()
+        
+        if not similar_patients:
+            return {
+                "response": "No similar patients found with matching conditions to base recommendations on.",
+                "supporting_evidence": {"patient_info": patient_info}
+            }
+        
+        # Create context for LLM with patient info and similar patients
+        context = {
+            "patient": patient_info,
+            "similar_patients": similar_patients
+        }
+        
+        # Prepare supporting evidence for the return value
+        supporting_evidence = {
+            "patient_info": patient_info,
+            "similar_patients": similar_patients
+        }
+        
+        # Create a system prompt specifically for treatment recommendations
+        system_prompt = """
+        You are Iris, a clinical assistant for rehabilitation professionals. Provide concise, evidence-based 
+        treatment recommendations based on outcomes from similar patients.
+        
+        Guidelines:
+        - Focus only on recommending treatments, exercises, or approaches
+        - Base recommendations directly on what worked for similar patients
+        - Be specific about treatment types, frequencies, and expected outcomes
+        - Do not list the similar patients - focus only on actionable recommendations
+        - Be concise and direct
+        """
+        
+        # Format the context
+        formatted_context = self._format_context(context)
+        
+        # Create specific instructions for this query type with explicit formatting guidelines
+        specific_instructions = """
+        Based on the similar patients provided in the context, recommend specific treatments, 
+        exercises, or therapeutic approaches for the main patient.
+        
+        Format your response as follows:
+        1. First recommendation
+        
+        2. Second recommendation
+        
+        3. Third recommendation
+        
+        For each recommendation include:
+        - The specific treatment or exercise name
+        - Frequency or duration
+        - Expected benefit based on similar patients' outcomes
+        
+        Be specific and practical. Do NOT list the similar patients - focus only on recommendations.
+        Ensure proper spacing between numbered items with blank lines.
+        """
+        
+        # Generate the prompt
+        user_prompt = f"""Query: {query_text}
+
+        Context Information:
+        {formatted_context}
+
+        Instructions:
+        {specific_instructions}
+
+        Provide concise, practical treatment recommendations based on what worked for similar patients.
+        """
+        
+        # Generate the response
+        raw_response = generate_llm_response(system_prompt, user_prompt)
+        
+        # If no response was generated, create a fallback
+        if not raw_response:
+            response = "Based on similar patients with the same condition, the following treatments have shown positive outcomes:\n\n"
+            
+            for i, patient in enumerate(similar_patients, 1):
+                treatment = patient.get('current_treatment', '')
+                outcomes = patient.get('treatment_outcomes', '')
+                
+                if treatment and outcomes and 'effective' in outcomes.lower():
+                    response += f"{i}. {treatment} - This approach has shown {outcomes.lower()}\n\n"
+            
+            return {
+                "response": response,
+                "supporting_evidence": supporting_evidence
+            }
+        
+        # Post-process the response to fix formatting issues
+        # 1. Look for consecutive numbers without proper line breaks
+        import re
+        
+        # Fix numbered lists with regex
+        # This pattern matches a number followed by a period, then text, then another number
+        fixed_response = re.sub(
+            r'(\d+\.\s+.+?)(\s*)(\d+\.)',
+            r'\1\n\n\3',
+            raw_response
+        )
+        
+        # Also ensure we have double line breaks after each recommendation
+        fixed_response = re.sub(
+            r'(\d+\.\s+.+?)(\n)(?!\n)',
+            r'\1\n\n',
+            fixed_response
+        )
+        
+        return {
+            "response": fixed_response,
+            "supporting_evidence": supporting_evidence
+        }
+
+    def _generate_template_response(self, query, patient_info, guidelines, exercises, similar_patients=None):
         """
         Generate a robust template-based response as fallback if LLM call fails
         Guarantees to return a response even with incomplete information
         """
         print("Generating template response")
         response_parts = []
-        
-        # Add a greeting that acknowledges patient when available
+    
         if patient_info and patient_info.get('name'):
-            response_parts.append(f"Here's what I know about patient {patient_info['name']}:")
-            
-            # Add patient info
-            if patient_info.get('condition'):
-                response_parts.append(f"\n**Condition:** {patient_info['condition']}")
-            
-            if patient_info.get('medical_history'):
-                response_parts.append(f"\n**Medical History:** {patient_info['medical_history']}")
-            
-            if patient_info.get('current_treatment'):
-                response_parts.append(f"\n**Current Treatment:** {patient_info['current_treatment']}")
-            
-            if patient_info.get('progress_notes'):
-                response_parts.append(f"\n**Progress Notes:** {patient_info['progress_notes']}")
-            
-            if patient_info.get('assessment'):
-                response_parts.append(f"\n**Assessment:** {patient_info['assessment']}")
+            response_parts.append(f"Here's information about {patient_info.get('name')}, who has {patient_info.get('condition', 'an unknown condition')}. ")
         else:
-            # Check if query is about a patient
-            import re
-            patient_match = re.search(r"patient\s+([A-Za-z]+\s+[A-Za-z]+)", query, re.IGNORECASE)
-            if patient_match:
-                patient_name = patient_match.group(1)
-                response_parts.append(f"I don't have specific information about patient {patient_name} in my database. To provide personalized recommendations, I would need details about their condition and medical history.")
-            else:
-                response_parts.append("Based on the available information:")
+            response_parts.append("I don't have specific information about that patient. ")
         
         # Add relevant guidelines if available
         if guidelines and len(guidelines) > 0:
@@ -628,35 +1057,61 @@ class ClinicalRAG:
         
         return "".join(response_parts)
 
+
     def add_patient(self, patient_data):
-        """Add a new patient to the database with vector embeddings"""
+        """Add a new patient to the database with multiple vector embeddings"""
         conn = self.get_db_connection()
         cursor = conn.cursor()
         
         try:
-            # Create embedding for combined notes
+            # Create separate embeddings for different aspects
+            history_embedding = self.model.encode(patient_data['medical_history'], normalize_embeddings=True).tolist()
+            treatment_embedding = self.model.encode(patient_data['current_treatment'], normalize_embeddings=True).tolist()
+            
+            # Create demographics embedding
+            demographics_text = f"Age {patient_data['age']} {patient_data.get('gender', 'Unknown')} {patient_data['condition']}"
+            demographics_embedding = self.model.encode(demographics_text, normalize_embeddings=True).tolist()
+            
+            # Create outcomes embedding if available, otherwise use assessment
+            outcomes_text = patient_data.get('treatment_outcomes', patient_data['assessment'])
+            outcomes_embedding = self.model.encode(outcomes_text, normalize_embeddings=True).tolist()
+            
+            # Create combined embedding for backward compatibility
             combined_text = f"{patient_data['medical_history']} {patient_data['current_treatment']} {patient_data['progress_notes']} {patient_data['assessment']}"
-            embedding = self.model.encode(combined_text, normalize_embeddings=True).tolist()
+            combined_embedding = self.model.encode(combined_text, normalize_embeddings=True).tolist()
             
             # Get the next available ID
             cursor.execute(f"SELECT MAX(id) FROM {self.PATIENT_TABLE}")
             max_id = cursor.fetchone()[0]
             new_id = 1 if max_id is None else max_id + 1
             
-            # Insert into database
+            # Insert into database with all embeddings
             cursor.execute(
-                f"INSERT INTO {self.PATIENT_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?))",
+                f"""
+                INSERT INTO {self.PATIENT_TABLE} 
+                (id, patient_id, name, age, gender, condition, medical_history, current_treatment, 
+                progress_notes, assessment, adherence_rate, treatment_outcomes, 
+                embedded_notes, embedded_history, embedded_treatment, embedded_demographics, embedded_outcomes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?), TO_VECTOR(?))
+                """,
                 (
                     new_id, 
                     patient_data["patient_id"], 
                     patient_data["name"], 
                     patient_data["age"],
+                    patient_data.get("gender", "Unknown"),
                     patient_data["condition"], 
                     patient_data["medical_history"], 
                     patient_data["current_treatment"], 
                     patient_data["progress_notes"], 
                     patient_data["assessment"],
-                    str(embedding)
+                    patient_data.get("adherence_rate", 0),
+                    patient_data.get("treatment_outcomes", ""),
+                    str(combined_embedding),
+                    str(history_embedding),
+                    str(treatment_embedding),
+                    str(demographics_embedding),
+                    str(outcomes_embedding)
                 )
             )
             
@@ -666,7 +1121,7 @@ class ClinicalRAG:
         finally:
             cursor.close()
             conn.close()
-    
+
     def delete_patient(self, patient_id):
         """Delete a patient from the database"""
         conn = self.get_db_connection()
@@ -787,14 +1242,313 @@ class ClinicalRAG:
             cursor.close()
             conn.close()
 
+    def find_similar_patients_iris_vector(self, patient_id, limit=3):
+        """
+        Use IRIS's native vector search capabilities to find similar patients
+        without causing segmentation faults
+        """
+        conn = None
+        cursor = None
+        
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            # First get the target patient's data and embeddings
+            cursor.execute(
+                f"""
+                SELECT id, embedded_demographics, embedded_history, embedded_treatment, embedded_outcomes 
+                FROM {self.PATIENT_TABLE} 
+                WHERE id = ?
+                """,
+                (patient_id,)
+            )
+            
+            target = cursor.fetchone()
+            if not target:
+                return {"error": "Patient not found", "similar_patients": []}
+            
+            # Use SQL to find similar patients based on vector dot product
+            # IRIS's native vector functions handle the similarity calculation
+            query = f"""
+                SELECT TOP {limit} id, name, condition, age, gender, medical_history, 
+                    current_treatment, assessment, treatment_outcomes,
+                    VECTOR_DOT_PRODUCT(embedded_demographics, TO_VECTOR(?)) AS demographics_sim,
+                    VECTOR_DOT_PRODUCT(embedded_history, TO_VECTOR(?)) AS history_sim,
+                    VECTOR_DOT_PRODUCT(embedded_treatment, TO_VECTOR(?)) AS treatment_sim,
+                    VECTOR_DOT_PRODUCT(embedded_outcomes, TO_VECTOR(?)) AS outcomes_sim
+                FROM {self.PATIENT_TABLE}
+                WHERE id != ?
+                ORDER BY (
+                    VECTOR_DOT_PRODUCT(embedded_demographics, TO_VECTOR(?)) * 0.3 +
+                    VECTOR_DOT_PRODUCT(embedded_history, TO_VECTOR(?)) * 0.3 +
+                    VECTOR_DOT_PRODUCT(embedded_treatment, TO_VECTOR(?)) * 0.2 +
+                    VECTOR_DOT_PRODUCT(embedded_outcomes, TO_VECTOR(?)) * 0.2
+                ) DESC
+            """
+            
+            # Execute the query with the patient's embeddings as parameters
+            # Pass each embedding twice due to the ORDER BY clause
+            cursor.execute(query, [
+                str(target[1]), str(target[2]), str(target[3]), str(target[4]), 
+                patient_id,
+                str(target[1]), str(target[2]), str(target[3]), str(target[4])
+            ])
+            
+            # Process results
+            similar_patients = []
+            for row in cursor.fetchall():
+                # Calculate combined similarity score
+                demographics_sim = float(row[9]) if row[9] is not None else 0.0
+                history_sim = float(row[10]) if row[10] is not None else 0.0
+                treatment_sim = float(row[11]) if row[11] is not None else 0.0
+                outcomes_sim = float(row[12]) if row[12] is not None else 0.0
+                
+                combined_score = (
+                    demographics_sim * 0.3 + 
+                    history_sim * 0.3 + 
+                    treatment_sim * 0.2 + 
+                    outcomes_sim * 0.2
+                )
+                
+                # Map combined score to category
+                if combined_score > 0.8:
+                    category = "High"
+                elif combined_score > 0.6:
+                    category = "Medium"
+                else:
+                    category = "Low"
+                
+                similar_patients.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "condition": row[2],
+                    "age": row[3],
+                    "gender": row[4],
+                    "medical_history": row[5],
+                    "current_treatment": row[6],
+                    "assessment": row[7],
+                    "treatment_outcomes": row[8],
+                    "similarity_score": category,
+                    "raw_score": round(combined_score, 2)
+                })
+            
+            return {"similar_patients": similar_patients}
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e), "similar_patients": []}
+        
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+
+    def _calculate_cosine_similarity(self, vec1, vec2):
+        """Calculate cosine similarity between two vectors using numpy"""
+        try:
+            import numpy as np
+            a = np.array(vec1)
+            b = np.array(vec2)
+            
+            # Check if vectors are non-zero
+            norm_a = np.linalg.norm(a)
+            norm_b = np.linalg.norm(b)
+            
+            if norm_a == 0 or norm_b == 0:
+                return 0.0
+                
+            return float(np.dot(a, b) / (norm_a * norm_b))
+        except Exception as e:
+            print(f"Error calculating cosine similarity: {e}")
+            return 0.0
+
+    def find_exercises_by_description(self, query_text, limit=5, condition=None):
+        """
+        Find exercises that semantically match the query description using vector search
+        """
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Create embedding for the query text
+            query_embedding = self.model.encode(query_text, normalize_embeddings=True).tolist()
+            
+            # Update all exercise embeddings for consistency
+            cursor.execute(f"SELECT id, exercise_name, description, benefits FROM {self.EXERCISES_TABLE}")
+            all_exercises = cursor.fetchall()
+            
+            updated_count = 0
+            for ex in all_exercises:
+                ex_id = ex[0]
+                    
+                # Create consistent embeddings for each exercise
+                combined_text = f"{ex[1]} {ex[2]} {ex[3]}"
+                new_embedding = self.model.encode(combined_text, normalize_embeddings=True).tolist()
+                
+                # Update the embedding
+                cursor.execute(
+                    f"""
+                    UPDATE {self.EXERCISES_TABLE}
+                    SET embedded_text = TO_VECTOR(?)
+                    WHERE id = ?
+                    """,
+                    (str(new_embedding), ex_id)
+                )
+                updated_count += 1
+            
+            if updated_count > 0:
+                print(f"Updated embeddings for {updated_count} exercises to ensure consistent dimensions")
+                conn.commit()
+            
+            # Build the SQL query with condition filter if provided
+            if condition:
+                cursor.execute(f"""
+                    SELECT TOP ? id, exercise_name, description, benefits, contraindications, severity, condition,
+                        VECTOR_DOT_PRODUCT(embedded_text, TO_VECTOR(?)) as relevance
+                    FROM {self.EXERCISES_TABLE}
+                    WHERE condition = ?
+                    ORDER BY relevance DESC
+                """, (limit, str(query_embedding), condition))
+            else:
+                cursor.execute(f"""
+                    SELECT TOP ? id, exercise_name, description, benefits, contraindications, severity, condition,
+                        VECTOR_DOT_PRODUCT(embedded_text, TO_VECTOR(?)) as relevance
+                    FROM {self.EXERCISES_TABLE}
+                    ORDER BY relevance DESC
+                """, (limit, str(query_embedding)))
+            
+            exercises = []
+            for row in cursor.fetchall():
+                relevance_score = float(row[7])  # Convert to float explicitly
+                exercises.append({
+                    "id": row[0],
+                    "exercise_name": row[1],
+                    "description": row[2],
+                    "benefits": row[3],
+                    "contraindications": row[4],
+                    "severity": row[5],
+                    "condition": row[6],
+                    "relevance": relevance_score
+                })
+            
+            return {"exercises": exercises}
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e)}, 500
+        
+        finally:
+            cursor.close()
+            conn.close()
+
+    def find_similar_patients_simple(self, patient_id, limit=3):
+        """
+        A simplified version of finding similar patients that doesn't use SentenceTransformer at runtime
+        """
+        import numpy as np
+        
+        conn = None
+        cursor = None
+        
+        try:
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get the patient's data
+            cursor.execute(
+                f"SELECT id, name, condition, age, gender, medical_history, current_treatment, assessment, treatment_outcomes FROM {self.PATIENT_TABLE} WHERE id = ?",
+                (patient_id,)
+            )
+            
+            patient_row = cursor.fetchone()
+            if not patient_row:
+                return {"error": "Patient not found", "similar_patients": []}
+                
+            # Get patient's condition for a simple match
+            patient_condition = patient_row[2]
+            
+            # Use f-string to insert the limit directly - not using parameter for TOP
+            cursor.execute(
+                f"""
+                SELECT TOP {limit} id, name, condition, age, gender, medical_history, current_treatment, assessment, treatment_outcomes
+                FROM {self.PATIENT_TABLE} 
+                WHERE id != ? AND condition LIKE ?
+                """,
+                (patient_id, f"%{patient_condition}%")
+            )
+            
+            similar_patients = []
+            
+            for row in cursor.fetchall():
+                try:
+                    # Calculate a simple text similarity based on condition
+                    from difflib import SequenceMatcher
+                    
+                    def similarity(a, b):
+                        return SequenceMatcher(None, a, b).ratio()
+                    
+                    # Calculate similarity based on condition
+                    condition_similarity = similarity(patient_condition, row[2])
+                    
+                    # Map similarity score to category
+                    similarity_category = "High" if condition_similarity > 0.8 else "Medium" if condition_similarity > 0.5 else "Low"
+                    
+                    similar_patients.append({
+                        "id": row[0],
+                        "name": row[1],
+                        "condition": row[2],
+                        "age": row[3],
+                        "gender": row[4],
+                        "medical_history": row[5],
+                        "current_treatment": row[6],
+                        "assessment": row[7],
+                        "treatment_outcomes": row[8],
+                        "similarity_score": similarity_category,
+                        "raw_score": condition_similarity
+                    })
+                except Exception as e:
+                    print(f"Error processing similarity row: {e}")
+                    continue
+            
+            # Sort by similarity (highest first)
+            similar_patients.sort(key=lambda x: x["raw_score"], reverse=True)
+            
+            return {"similar_patients": similar_patients}
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"error": str(e), "similar_patients": []}
+        
+        finally:
+            # Make sure we clean up resources
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
     def cleanup(self):
         """Clean up resources to prevent leaks"""
         try:
-            # Clear the model to release resources
-            if hasattr(self, 'model') and self.model is not None:
-                import gc
-                del self.model
-                gc.collect()
+            # Clear global model reference
+            global _model
+            if _model is not None:
+                # Clear CUDA cache if using GPU
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                # Delete model reference
+                _model = None
                 print("Cleaned up SentenceTransformer resources")
         except Exception as e:
             print(f"Error during cleanup: {e}")
