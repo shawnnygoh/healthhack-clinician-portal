@@ -6,28 +6,28 @@ import { Button } from "@/components/ui/button"
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from "recharts"
 
 const appointments = [
-  { id: 1, patient: "John Doe", date: "2023-05-15", time: "10:00 AM", type: "Follow-up", status: "Confirmed" },
+  { id: 1, patient: "Tan Wei Jie", date: "2023-05-15", time: "10:00 AM", type: "Follow-up", status: "Confirmed" },
   {
     id: 2,
-    patient: "Jane Smith",
+    patient: "Lim Jia Hui",
     date: "2023-05-15",
     time: "11:30 AM",
     type: "Initial Consultation",
     status: "Pending",
   },
-  { id: 3, patient: "Bob Johnson", date: "2023-05-16", time: "2:00 PM", type: "Follow-up", status: "Confirmed" },
-  { id: 4, patient: "Alice Brown", date: "2023-05-16", time: "3:30 PM", type: "Assessment", status: "Confirmed" },
-  { id: 5, patient: "Charlie Davis", date: "2023-05-17", time: "9:00 AM", type: "Follow-up", status: "Cancelled" },
+  { id: 3, patient: "Muhammad Irfan Bin Salleh", date: "2023-05-16", time: "2:00 PM", type: "Follow-up", status: "Confirmed" },
+  { id: 4, patient: "Rajesh Kumar s/o Maniam", date: "2023-05-16", time: "3:30 PM", type: "Assessment", status: "Confirmed" },
+  { id: 5, patient: "Tan Wei Jie", date: "2023-05-17", time: "9:00 AM", type: "Follow-up", status: "Cancelled" },
   {
     id: 6,
-    patient: "Eva Wilson",
+    patient: "Chong Li Ting",
     date: "2023-05-17",
     time: "10:30 AM",
     type: "Initial Consultation",
     status: "Confirmed",
   },
-  { id: 7, patient: "Frank Miller", date: "2023-05-18", time: "1:00 PM", type: "Follow-up", status: "Pending" },
-  { id: 8, patient: "Grace Lee", date: "2023-05-18", time: "2:30 PM", type: "Assessment", status: "Confirmed" },
+  { id: 7, patient: "Lim Jia Hui", date: "2023-05-18", time: "1:00 PM", type: "Follow-up", status: "Pending" },
+  { id: 8, patient: "Nur Aisyah Binte Rahman", date: "2023-05-18", time: "2:30 PM", type: "Assessment", status: "Confirmed" },
 ]
 
 const appointmentTypes = [

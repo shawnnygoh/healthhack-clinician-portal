@@ -27,7 +27,7 @@ export default function PatientsDashboard() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
         <PatientCountCard/>
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-xl">Active Treatment Plans</CardTitle>
           </CardHeader>
           <CardContent>
@@ -36,7 +36,7 @@ export default function PatientsDashboard() {
           </CardContent>
         </Card>
         <Card className="md:col-span-2 lg:col-span-1">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-xl">Avg. Adherence Rate</CardTitle>
           </CardHeader>
           <CardContent>
@@ -111,7 +111,7 @@ export default function PatientsDashboard() {
           </div>
         </CardHeader>
         <CardContent>
-          <PatientList onSelectPatient={() => {}} />
+          <PatientList />
         </CardContent>
       </Card>
     </div>

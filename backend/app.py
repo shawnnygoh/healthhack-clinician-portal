@@ -136,7 +136,7 @@ def seed_sample_data():
             {
                 "id": 1,
                 "patient_id": "P001",
-                "name": "John Doe",
+                "name": "Tan Wei Jie",
                 "age": 65,
                 "gender": "Male",
                 "condition": "Parkinson's Disease",
@@ -150,7 +150,7 @@ def seed_sample_data():
             {
                 "id": 2,
                 "patient_id": "P002",
-                "name": "Jane Smith",
+                "name": "Nur Aisyah Binte Rahman",
                 "age": 58,
                 "gender": "Female",
                 "condition": "Rheumatoid Arthritis",
@@ -164,7 +164,7 @@ def seed_sample_data():
             {
                 "id": 3,
                 "patient_id": "P003",
-                "name": "Bob Johnson",
+                "name": "Rajesh Kumar s/o Maniam",
                 "age": 70,
                 "gender": "Male",
                 "condition": "Parkinson's Disease",
@@ -178,7 +178,7 @@ def seed_sample_data():
             {
                 "id": 4,
                 "patient_id": "P004",
-                "name": "Alice Brown",
+                "name": "Lim Jia Hui",
                 "age": 50,
                 "gender": "Female",
                 "condition": "Rheumatoid Arthritis",
@@ -192,7 +192,7 @@ def seed_sample_data():
             {
                 "id": 5,
                 "patient_id": "P005",
-                "name": "Charlie Davis",
+                "name": "Muhammad Irfan Bin Salleh",
                 "age": 45,
                 "gender": "Male",
                 "condition": "Parkinson's Disease",

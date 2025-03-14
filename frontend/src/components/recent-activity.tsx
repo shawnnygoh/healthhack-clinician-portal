@@ -1,10 +1,10 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 const activities = [
-  { id: 1, description: "John Doe completed hand exercise routine", time: "10 minutes ago" },
-  { id: 2, description: "Jane Smith achieved a new high score in grip strength game", time: "1 hour ago" },
-  { id: 3, description: "Bob Johnson missed scheduled exercise", time: "2 hours ago" },
-  { id: 4, description: "Alice Brown completed weekly assessment", time: "3 hours ago" },
+  { id: 1, description: "Nur Aisyah Binte Rahman completed hand exercise routine", time: "10 minutes ago" },
+  { id: 2, description: "Lim Jia Hui achieved a new high score in grip strength game", time: "1 hour ago" },
+  { id: 3, description: "Tan Wei Jie missed scheduled exercise", time: "2 hours ago" },
+  { id: 4, description: "Rajesh Kumar s/o Maniam completed weekly assessment", time: "3 hours ago" },
 ]
 
 export function RecentActivity() {
